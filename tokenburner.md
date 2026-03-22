@@ -29,9 +29,89 @@ Before your AI assistant can build anything, you need these enabled in your AWS 
 4. **Python 3.12+** installed
 5. **Docker** installed (for CDK asset bundling)
 
+### Account Discovery
+
+After configuring the AWS CLI, have your AI assistant run the discovery commands below. This audits your account so the stack can reuse existing infrastructure and give you specific guidance on what's missing.
+
+**Run all of these — the AI assistant will interpret the results:**
+
+```bash
+# Identity — who am I and what account is this?
+aws sts get-caller-identity
+aws iam list-account-aliases
+
+# Region — what region is configured?
+aws configure get region
+
+# Bedrock — are models enabled?
+aws bedrock list-foundation-models --query 'modelSummaries[?true].{id:modelId,name:modelName,status:modelLifecycle.status}' --output table
+
+# CDK — is the account bootstrapped?
+aws cloudformation describe-stacks --stack-name CDKToolkit --query 'Stacks[0].{Status:StackStatus,Created:CreationTime}' --output table 2>/dev/null || echo "CDK NOT BOOTSTRAPPED"
+
+# VPC — any existing VPCs beyond the default?
+aws ec2 describe-vpcs --query 'Vpcs[].{VpcId:VpcId,Cidr:CidrBlock,Default:IsDefault,Name:Tags[?Key==`Name`]|[0].Value}' --output table
+
+# Load Balancers — any existing ALBs we can share?
+aws elbv2 describe-load-balancers --query 'LoadBalancers[].{Name:LoadBalancerName,DNS:DNSName,Scheme:Scheme,VpcId:VpcId,State:State.Code,Type:Type}' --output table 2>/dev/null || echo "NO LOAD BALANCERS"
+
+# ECS — any existing clusters?
+aws ecs list-clusters --output table 2>/dev/null || echo "NO ECS CLUSTERS"
+
+# Route53 — any hosted zones / domains already configured?
+aws route53 list-hosted-zones --query 'HostedZones[].{Name:Name,Id:Id,Records:ResourceRecordSetCount,Private:Config.PrivateZone}' --output table 2>/dev/null || echo "NO HOSTED ZONES"
+
+# ACM — any existing TLS certificates?
+aws acm list-certificates --query 'CertificateSummaryList[].{Domain:DomainName,Status:Status,Type:Type,InUse:InUseBy[0]}' --output table 2>/dev/null || echo "NO CERTIFICATES"
+# Also check us-east-1 (required for CloudFront certs)
+aws acm list-certificates --region us-east-1 --query 'CertificateSummaryList[].{Domain:DomainName,Status:Status,Type:Type}' --output table 2>/dev/null || echo "NO CERTIFICATES IN us-east-1"
+
+# Aurora / RDS — any existing database clusters?
+aws rds describe-db-clusters --query 'DBClusters[].{Cluster:DBClusterIdentifier,Engine:Engine,Status:Status,Endpoint:Endpoint,Serverless:ServerlessV2ScalingConfiguration}' --output table 2>/dev/null || echo "NO DB CLUSTERS"
+
+# DynamoDB — any existing tables?
+aws dynamodb list-tables --output table 2>/dev/null || echo "NO DYNAMODB TABLES"
+
+# S3 — existing buckets (may contain useful assets or prior deployments)
+aws s3 ls 2>/dev/null || echo "NO S3 BUCKETS"
+
+# Secrets Manager — any existing secrets?
+aws secretsmanager list-secrets --query 'SecretList[].{Name:Name,Description:Description}' --output table 2>/dev/null || echo "NO SECRETS"
+
+# Lambda — any existing functions?
+aws lambda list-functions --query 'Functions[].{Name:FunctionName,Runtime:Runtime,LastModified:LastModified}' --output table 2>/dev/null || echo "NO LAMBDA FUNCTIONS"
+
+# Service Quotas — check Fargate and Bedrock limits
+aws service-quotas get-service-quota --service-code fargate --quota-code L-3032A538 --query 'Quota.{Name:QuotaName,Value:Value}' --output table 2>/dev/null || echo "COULD NOT CHECK FARGATE QUOTA"
+```
+
+### Interpreting Discovery Results
+
+The AI assistant should evaluate the results and tell you:
+
+**Green (ready to go):**
+- AWS CLI authenticated with admin access
+- Bedrock models show as ACTIVE for your region
+- CDK bootstrap stack exists and is CREATE_COMPLETE
+- At least one hosted zone with a usable domain
+
+**Yellow (can proceed, with adjustments):**
+- Existing ALB found → base stack can import it instead of creating a new one (saves ~$16/mo)
+- Existing ECS cluster found → base stack can share it
+- Existing Aurora cluster found → products can use it instead of creating a new one (saves ~$22/mo)
+- Existing VPC found → base stack can use it instead of creating a new one
+- Existing wildcard cert found → base stack imports it instead of creating one
+- Existing DynamoDB tables → check for naming conflicts before deploying
+
+**Red (action needed before deploying):**
+- No Bedrock model access → enable models in the console (see below)
+- CDK not bootstrapped → run `cdk bootstrap` (see below)
+- No admin permissions → need broader IAM access
+- No hosted zone → stack will use ALB DNS (functional but no custom domain)
+
 ### Enable Bedrock Models
 
-Go to the [Bedrock Model Access console](https://console.aws.amazon.com/bedrock/home#/modelaccess) and request access to:
+If discovery shows no Bedrock models, go to the [Bedrock Model Access console](https://console.aws.amazon.com/bedrock/home#/modelaccess) and request access to:
 - At least one LLM family (check Bedrock pricing for current options and tiers)
 - Enable in your primary region (us-west-2 recommended)
 
@@ -39,15 +119,22 @@ Model access approval is usually instant for on-demand.
 
 ### Bootstrap CDK
 
-Run once per account/region. This creates the S3 bucket and IAM roles CDK needs:
+If discovery shows CDK is not bootstrapped, run once per account/region:
 
 ```bash
 cdk bootstrap aws://ACCOUNT_ID/us-west-2
 ```
 
-### Create a Hosted Zone (if you have a domain)
+### Domain Setup
 
-If you have a custom domain, create a Route53 hosted zone and point your registrar's nameservers to it. If not, the stack works with ALB-provided DNS.
+If discovery found existing hosted zones, the AI assistant should recommend which domain/subdomain to use (e.g., `apps.your-existing-domain.com`).
+
+If no hosted zones exist and you have a domain:
+1. Create a Route53 hosted zone for your domain
+2. Point your registrar's nameservers to the Route53 NS records
+3. Wait for DNS propagation (usually < 1 hour)
+
+If you don't have a domain, the stack works fine with ALB-provided DNS (e.g., `tokenburner-alb-123456.us-west-2.elb.amazonaws.com`). You can add a custom domain later.
 
 ### Cost Expectations
 
