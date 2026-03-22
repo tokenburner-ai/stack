@@ -83,6 +83,18 @@ aws lambda list-functions --query 'Functions[].{Name:FunctionName,Runtime:Runtim
 
 # Service Quotas — check Fargate and Bedrock limits
 aws service-quotas get-service-quota --service-code fargate --quota-code L-3032A538 --query 'Quota.{Name:QuotaName,Value:Value}' --output table 2>/dev/null || echo "COULD NOT CHECK FARGATE QUOTA"
+
+# IaC State — detect resources managed by Terraform, CloudFormation, or other tools
+# Terraform state buckets (convention: name contains "terraform" or "tfstate")
+aws s3 ls 2>/dev/null | grep -iE 'terraform|tfstate' || echo "NO TERRAFORM STATE BUCKETS FOUND"
+
+# CloudFormation stacks — everything managed by CFN/CDK
+aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE --query 'StackSummaries[].{Name:StackName,Status:StackStatus,Updated:LastUpdatedTime,Drift:DriftInformation.StackDriftStatus}' --output table 2>/dev/null || echo "NO CLOUDFORMATION STACKS"
+
+# Check for Terraform resource tags on key infrastructure
+aws ec2 describe-vpcs --query 'Vpcs[?Tags[?Key==`terraform`||Key==`tf:managed`||Key==`ManagedBy`||Key==`aws:cloudformation:stack-name`]].{VpcId:VpcId,Name:Tags[?Key==`Name`]|[0].Value,ManagedBy:Tags[?Key==`ManagedBy`||Key==`terraform`||Key==`aws:cloudformation:stack-name`]|[0].Value}' --output table 2>/dev/null
+aws elbv2 describe-load-balancers --query 'LoadBalancers[].LoadBalancerArn' --output text 2>/dev/null | tr '\t' '\n' | while read arn; do echo "--- $arn ---"; aws elbv2 describe-tags --resource-arns "$arn" --query 'TagDescriptions[].Tags[?Key==`ManagedBy`||Key==`terraform`||Key==`aws:cloudformation:stack-name`||Key==`aws:cloudformation:stack-id`]' --output table 2>/dev/null; done
+aws rds describe-db-clusters --query 'DBClusters[].{Cluster:DBClusterIdentifier,Tags:TagList[?Key==`ManagedBy`||Key==`terraform`||Key==`aws:cloudformation:stack-name`]}' --output table 2>/dev/null
 ```
 
 ### Interpreting Discovery Results
@@ -102,6 +114,23 @@ The AI assistant should evaluate the results and tell you:
 - Existing VPC found → base stack can use it instead of creating a new one
 - Existing wildcard cert found → base stack imports it instead of creating one
 - Existing DynamoDB tables → check for naming conflicts before deploying
+
+**Orange (managed infrastructure detected — proceed with caution):**
+
+If discovery finds resources tagged with `ManagedBy`, `terraform`, `tf:managed`, or `aws:cloudformation:stack-name`, those resources are controlled by an IaC tool. This is critical to understand:
+
+- **Terraform-managed resources**: If you modify these outside of Terraform (e.g., by importing into CDK or changing manually), the next `terraform apply` will revert or destroy your changes. The Terraform state file is the source of truth.
+- **CloudFormation/CDK-managed resources**: Same risk — if another CDK stack owns a resource, deploying that stack could overwrite your modifications.
+- **Pulumi, SAM, or other tools**: Same principle applies to any IaC tool with state management.
+
+**What to do when managed resources are found:**
+- **DO NOT import or modify** resources owned by another IaC tool
+- **DO** create new resources alongside them (new ALB, new VPC, etc.) to avoid conflicts
+- **DO** reference them read-only if needed (e.g., peer VPCs, share a hosted zone by zone ID)
+- **DO** warn the user which resources are managed and by what tool
+- If the user wants to share managed resources, they should add the tokenburner stack's resources through their existing IaC tool, not the other way around
+
+The AI assistant should clearly report: "These resources exist but are managed by [Terraform/CDK/other]. I'll create new resources for tokenburner instead of touching these."
 
 **Red (action needed before deploying):**
 - No Bedrock model access → enable models in the console (see below)
