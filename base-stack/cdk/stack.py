@@ -32,6 +32,13 @@ class TokenburnerBaseStack(cdk.Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # ──────────────────────────────────────────────
+        # Tags — applied to ALL resources in this stack
+        # ──────────────────────────────────────────────
+        cdk.Tags.of(self).add("ManagedBy", "tokenburner")
+        cdk.Tags.of(self).add("tokenburner:stack", "base")
+        cdk.Tags.of(self).add("tokenburner:component", "infrastructure")
+
+        # ──────────────────────────────────────────────
         # VPC
         # ──────────────────────────────────────────────
         if existing_vpc_id:

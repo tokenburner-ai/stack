@@ -35,6 +35,14 @@ class BackgroundJobStack(cdk.Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # ──────────────────────────────────────────────
+        # Tags
+        # ──────────────────────────────────────────────
+        cdk.Tags.of(self).add("ManagedBy", "tokenburner")
+        cdk.Tags.of(self).add("tokenburner:stack", "product")
+        cdk.Tags.of(self).add("tokenburner:product", product_name)
+        cdk.Tags.of(self).add("tokenburner:pattern", "background-job")
+
+        # ──────────────────────────────────────────────
         # Import base stack resources
         # ──────────────────────────────────────────────
         vpc_id = cdk.Fn.import_value("tokenburner-vpc-id")

@@ -29,6 +29,13 @@ class ProductStack(cdk.Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # ──────────────────────────────────────────────
+        # Tags — applied to ALL resources in this stack
+        # ──────────────────────────────────────────────
+        cdk.Tags.of(self).add("ManagedBy", "tokenburner")
+        cdk.Tags.of(self).add("tokenburner:stack", "product")
+        cdk.Tags.of(self).add("tokenburner:product", product_name)
+
+        # ──────────────────────────────────────────────
         # Import base stack resources
         # ──────────────────────────────────────────────
         vpc_id = cdk.Fn.import_value("tokenburner-vpc-id")
