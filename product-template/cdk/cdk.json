@@ -1,0 +1,7 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "product_name": "my-product",
+    "subdomain": "my-product"
+  }
+}

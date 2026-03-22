@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tokenburner Product</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #111;
+            color: #f7f7f7;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .container {
+            text-align: center;
+            max-width: 600px;
+            padding: 2rem;
+        }
+        h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+        p { color: #999; font-size: 1.1rem; }
+        .status {
+            margin-top: 2rem;
+            padding: 1rem;
+            background: #1a1a1a;
+            border-radius: 8px;
+            font-family: monospace;
+            color: #4ade80;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Your Product Name</h1>
+        <p>Built on the tokenburner stack.</p>
+        <div class="status" id="status">Checking health...</div>
+    </div>
+    <script>
+        fetch('/health')
+            .then(r => r.json())
+            .then(d => {
+                document.getElementById('status').textContent =
+                    d.status === 'ok' ? 'Stack is live. Start building.' : 'Error: ' + d.detail;
+            })
+            .catch(() => {
+                document.getElementById('status').textContent = 'Could not reach backend.';
+                document.getElementById('status').style.color = '#ef4444';
+            });
+    </script>
+</body>
+</html>

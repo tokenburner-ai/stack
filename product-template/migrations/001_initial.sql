@@ -1,0 +1,10 @@
+-- Baseline migration — add your schema here.
+-- Example:
+--
+-- CREATE TABLE items (
+--     id SERIAL PRIMARY KEY,
+--     name TEXT NOT NULL,
+--     data JSONB DEFAULT '{}',
+--     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+--     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- );

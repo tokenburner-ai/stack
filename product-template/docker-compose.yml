@@ -1,0 +1,39 @@
+# Local development — mirrors the cloud stack with Docker Compose.
+# Use this to develop and test locally before deploying to AWS.
+
+services:
+  web:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgresql://tokenburner:tokenburner@db:5432/tokenburner
+      - SECRET_KEY=local-dev-key
+      - AWS_PROFILE=${AWS_PROFILE:-default}
+      - AWS_REGION=${AWS_REGION:-us-west-2}
+    volumes:
+      - ./app:/app/app
+      - ./static:/app/static
+      - ./migrations:/app/migrations
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tokenburner
+      POSTGRES_PASSWORD: tokenburner
+      POSTGRES_DB: tokenburner
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tokenburner"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
