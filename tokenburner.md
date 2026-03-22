@@ -538,13 +538,41 @@ cd my-product/cdk
 cdk destroy my-product-stack
 ```
 
+### Deploy a Website
+
+```bash
+# Without a domain (live instantly on CloudFront URL)
+cd website/cdk
+pip install -r requirements.txt
+cdk deploy -c product_name=my-product
+
+# With a custom domain
+cdk deploy -c product_name=my-product -c domain_name=myproduct.com -c subdomain=www
+```
+
+See `website/README.md` for full domain setup guide (Route53, external registrars, adding a domain later).
+
 ### Tear Down Everything
+
+Tokenburner only destroys resources it created. Resources that existed before tokenburner (VPCs, ALBs, clusters, databases passed in via `existing_*` context params) are **never touched** by `cdk destroy`. Only resources with the `ManagedBy: tokenburner` tag were created by the stack.
 
 ```bash
 # Destroy products first, then base
 cd my-product/cdk && cdk destroy my-product-stack
+cd website/cdk && cdk destroy tokenburner-my-product-website
 cd base-stack/cdk && cdk destroy tokenburner-base
 ```
+
+**Safe to destroy:**
+- Product stacks (Fargate services, ALB rules, DNS records, log groups)
+- Website stacks (S3 buckets, CloudFront distributions, certs, DNS records)
+- Base stack (VPC, ALB, ECS cluster, Aurora, DynamoDB — only if tokenburner created them)
+
+**Never destroyed:**
+- Resources imported via `existing_vpc_id`, `existing_alb_arn`, `existing_ecs_cluster_name`, `existing_db_cluster_id`
+- Resources managed by other IaC tools (Terraform, other CDK stacks)
+- Data in Aurora (removal policy = SNAPSHOT — a final snapshot is taken)
+- DynamoDB API keys table (removal policy = RETAIN)
 
 ## Environment Variables
 
@@ -593,6 +621,16 @@ stack/
 │   ├── docker-compose.yml   # Local development
 │   ├── requirements.txt     # Flask, flasgger, psycopg2, boto3
 │   └── tokenburner.md       # Context file template
+├── website/
+│   ├── static/
+│   │   ├── index.html       # Landing page (flame particles, dark theme)
+│   │   └── style.css        # Responsive styles with tokenburner branding
+│   ├── cdk/
+│   │   ├── app.py           # CDK entry with domain_name/subdomain context
+│   │   ├── stack.py         # S3 + CloudFront + optional Route53/ACM
+│   │   ├── cdk.json
+│   │   └── requirements.txt
+│   └── README.md            # Domain setup guide (Route53, external, none)
 ├── patterns/
 │   ├── static-spa/          # S3 + CloudFront pattern
 │   ├── ai-chat/             # Bedrock + SSE pattern

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Product</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <nav>
+        <div class="nav-inner">
+            <a href="/" class="logo">Your Product</a>
+            <div class="nav-links">
+                <a href="#features">Features</a>
+                <a href="#pricing">Pricing</a>
+                <a href="/docs" class="btn btn-outline">API Docs</a>
+                <a href="/auth/login" class="btn btn-primary">Sign In</a>
+            </div>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <div class="hero-backdrop">
+            <canvas id="flames"></canvas>
+        </div>
+        <div class="hero-content">
+            <h1>Burned a few to build this</h1>
+            <p>A short description of what your product does and why people should care.</p>
+            <div class="hero-actions">
+                <a href="/auth/login" class="btn btn-primary btn-large">Get Started</a>
+                <a href="/docs" class="btn btn-outline btn-large">View API Docs</a>
+            </div>
+        </div>
+    </section>
+
+    <section id="features" class="features">
+        <h2>Features</h2>
+        <div class="feature-grid">
+            <div class="feature-card">
+                <h3>Feature One</h3>
+                <p>Describe what this feature does and why it matters.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Feature Two</h3>
+                <p>Describe what this feature does and why it matters.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Feature Three</h3>
+                <p>Describe what this feature does and why it matters.</p>
+            </div>
+        </div>
+    </section>
+
+    <section id="pricing" class="pricing">
+        <h2>Pricing</h2>
+        <div class="pricing-grid">
+            <div class="pricing-card">
+                <h3>Free</h3>
+                <div class="price">$0<span>/mo</span></div>
+                <ul>
+                    <li>1,000 API calls/month</li>
+                    <li>Community support</li>
+                </ul>
+                <a href="/auth/login" class="btn btn-outline">Start Free</a>
+            </div>
+            <div class="pricing-card featured">
+                <h3>Pro</h3>
+                <div class="price">$29<span>/mo</span></div>
+                <ul>
+                    <li>100,000 API calls/month</li>
+                    <li>Priority support</li>
+                    <li>Custom integrations</li>
+                </ul>
+                <a href="/auth/login" class="btn btn-primary">Get Started</a>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="footer-brand">
+            <span class="footer-flame">&#x1F525;</span>
+            Brought to you by <a href="https://tokenburner.ai">tokenburner</a>
+        </div>
+    </footer>
+
+    <script>
+    // Animated flame particles in the hero backdrop
+    (function() {
+        const canvas = document.getElementById('flames');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+        let w, h;
+
+        function resize() {
+            const hero = canvas.parentElement;
+            w = canvas.width = hero.offsetWidth;
+            h = canvas.height = hero.offsetHeight;
+        }
+
+        function Particle() {
+            this.reset();
+        }
+
+        Particle.prototype.reset = function() {
+            this.x = Math.random() * w;
+            this.y = h + Math.random() * 40;
+            this.vx = (Math.random() - 0.5) * 0.8;
+            this.vy = -(1.5 + Math.random() * 2.5);
+            this.life = 1;
+            this.decay = 0.005 + Math.random() * 0.015;
+            this.size = 1 + Math.random() * 2.5;
+            // Color: cycle through orange, red-orange, blue-white (like a flame in space)
+            const t = Math.random();
+            if (t < 0.4) {
+                this.r = 255; this.g = 120 + Math.random() * 80; this.b = 20;
+            } else if (t < 0.7) {
+                this.r = 255; this.g = 60 + Math.random() * 40; this.b = 10;
+            } else if (t < 0.9) {
+                this.r = 80 + Math.random() * 60; this.g = 140 + Math.random() * 80; this.b = 255;
+            } else {
+                this.r = 200 + Math.random() * 55; this.g = 200 + Math.random() * 55; this.b = 255;
+            }
+        };
+
+        Particle.prototype.update = function() {
+            this.x += this.vx + (Math.random() - 0.5) * 0.3;
+            this.vy *= 0.995;
+            this.y += this.vy;
+            this.life -= this.decay;
+            if (this.life <= 0) this.reset();
+        };
+
+        Particle.prototype.draw = function() {
+            const alpha = this.life * 0.7;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size * this.life, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${this.r},${this.g},${this.b},${alpha})`;
+            ctx.fill();
+            // Glow
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size * this.life * 3, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${this.r},${this.g},${this.b},${alpha * 0.15})`;
+            ctx.fill();
+        };
+
+        function init() {
+            resize();
+            const count = Math.min(Math.floor(w * 0.15), 200);
+            particles = [];
+            for (let i = 0; i < count; i++) {
+                const p = new Particle();
+                p.y = Math.random() * h; // spread initial positions
+                p.life = Math.random();
+                particles.push(p);
+            }
+        }
+
+        function loop() {
+            ctx.clearRect(0, 0, w, h);
+            for (const p of particles) {
+                p.update();
+                p.draw();
+            }
+            requestAnimationFrame(loop);
+        }
+
+        window.addEventListener('resize', () => { resize(); init(); });
+        init();
+        loop();
+    })();
+    </script>
+</body>
+</html>
