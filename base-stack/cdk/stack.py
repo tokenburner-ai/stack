@@ -211,17 +211,53 @@ class TokenburnerBaseStack(cdk.Stack):
 
         # ──────────────────────────────────────────────
         # DynamoDB — API Keys table
+        #
+        # Schema:
+        #   key_id (PK): "sk_<32 hex chars>" — generated via secrets.token_hex(16)
+        #   name (GSI): human-readable key name for lookup
+        #   active: bool — key enabled/disabled
+        #   permissions: list — ["read"] or ["read", "write"]
+        #   environments: list — ["dev", "prd"] or ["*"] for all
+        #   email: str (optional) — owner's email
+        #   description: str (optional) — key purpose
+        #   created_at: str — ISO 8601 timestamp
+        #   created_by: str — creator identity
+        #   last_used_at: str — updated on each auth
+        #   expires_at: str (optional) — expiration timestamp
         # ──────────────────────────────────────────────
         self.api_keys_table = dynamodb.Table(
             self,
             "ApiKeys",
             table_name="tokenburner-api-keys",
             partition_key=dynamodb.Attribute(
-                name="api_key",
+                name="key_id",
                 type=dynamodb.AttributeType.STRING,
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery=True,
+            stream=dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
             removal_policy=cdk.RemovalPolicy.RETAIN,
+        )
+
+        # GSI for looking up keys by human-readable name
+        self.api_keys_table.add_global_secondary_index(
+            index_name="name-index",
+            partition_key=dynamodb.Attribute(
+                name="name",
+                type=dynamodb.AttributeType.STRING,
+            ),
+        )
+
+        # ──────────────────────────────────────────────
+        # Google OAuth Secrets
+        # Store Google OAuth client ID and secret for
+        # human user authentication across all products.
+        # ──────────────────────────────────────────────
+        self.oauth_secret = secretsmanager.Secret(
+            self,
+            "OAuthSecret",
+            secret_name="tokenburner/google-oauth",
+            description="Google OAuth client credentials for tokenburner products",
         )
 
         # ──────────────────────────────────────────────
@@ -265,6 +301,7 @@ class TokenburnerBaseStack(cdk.Stack):
 
         self._export("api-keys-table-name", self.api_keys_table.table_name)
         self._export("api-keys-table-arn", self.api_keys_table.table_arn)
+        self._export("oauth-secret-arn", self.oauth_secret.secret_arn)
 
     def _export(self, name: str, value: str) -> None:
         """Create a CfnOutput with a standardized export name."""

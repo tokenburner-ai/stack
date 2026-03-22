@@ -61,6 +61,11 @@ class ProductStack(cdk.Stack):
 
         api_keys_table_name = cdk.Fn.import_value("tokenburner-api-keys-table-name")
 
+        oauth_secret_arn = cdk.Fn.import_value("tokenburner-oauth-secret-arn")
+        oauth_secret = secretsmanager.Secret.from_secret_complete_arn(
+            self, "OAuthSecret", secret_complete_arn=oauth_secret_arn
+        )
+
         # Route53 zone (optional — may not exist if no domain)
         zone_id = None
         zone_name = None
@@ -91,8 +96,24 @@ class ProductStack(cdk.Stack):
             memory_limit_mib=512,
         )
 
-        # Grant DB secret read access
+        # Grant secret access
         db_secret.grant_read(task_def.task_role)
+        oauth_secret.grant_read(task_def.task_role)
+
+        # Grant API keys table read + update (for last_used_at tracking)
+        task_def.task_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "dynamodb:GetItem",
+                    "dynamodb:Query",
+                    "dynamodb:UpdateItem",
+                ],
+                resources=[
+                    cdk.Fn.import_value("tokenburner-api-keys-table-arn"),
+                    f"{cdk.Fn.import_value('tokenburner-api-keys-table-arn')}/index/*",
+                ],
+            )
+        )
 
         # Grant Bedrock invoke access (for AI features)
         task_def.task_role.add_to_policy(
@@ -119,6 +140,8 @@ class ProductStack(cdk.Stack):
             },
             secrets={
                 "DB_SECRET_JSON": ecs.Secret.from_secrets_manager(db_secret),
+                "GOOGLE_CLIENT_ID": ecs.Secret.from_secrets_manager(oauth_secret, field="client_id"),
+                "GOOGLE_CLIENT_SECRET": ecs.Secret.from_secrets_manager(oauth_secret, field="client_secret"),
             },
             health_check=ecs.HealthCheck(
                 command=["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],

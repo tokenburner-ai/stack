@@ -423,21 +423,95 @@ Rule: if you need JOINs, aggregations, or complex queries, use PostgreSQL.
 
 ## Authentication
 
-Two patterns depending on product needs:
+Two auth paths — every tokenburner product supports both out of the box.
 
-### API Key Auth (service-to-service)
+### 1. API Keys (programmatic access)
 
-- Keys stored in shared DynamoDB table
-- Passed via `X-API-Key` header
-- Validated by each service independently
-- Good for: APIs, webhooks, machine clients
+For services, scripts, CI/CD, and machine clients.
 
-### User Auth (human users)
+- Key format: `sk_` + 32 hex characters (e.g., `sk_a1b2c3d4e5f6...`)
+- Passed via `Authorization: Bearer sk_...`, `X-API-Key: sk_...`, or `?key=sk_...`
+- Validated against the shared DynamoDB API keys table
+- Supports permissions (`read`, `write`), environment scoping, and expiration
 
-- Users table in PostgreSQL
-- Password hashing with werkzeug scrypt (or bcrypt)
-- Flask session cookies
-- Good for: web apps, dashboards, admin panels
+**DynamoDB API Keys Table Schema:**
+
+| Field | Type | Required | Purpose |
+|-------|------|----------|---------|
+| `key_id` | String (PK) | Yes | `sk_<32 hex>` — the key itself |
+| `name` | String (GSI) | Yes | Human-readable name for lookup |
+| `active` | Boolean | Yes | Enabled/disabled (default: true) |
+| `permissions` | List | Yes | `["read"]` or `["read", "write"]` |
+| `environments` | List | Yes | `["dev", "prd"]` or `["*"]` for all |
+| `email` | String | No | Owner's email |
+| `description` | String | No | Key purpose |
+| `created_at` | String | Yes | ISO 8601 timestamp |
+| `created_by` | String | Yes | Creator identity |
+| `last_used_at` | String | Auto | Updated on each authentication |
+| `expires_at` | String | No | Expiration (checked on auth) |
+
+**Key management CLI:**
+
+```bash
+cd base-stack
+python manage_keys.py list
+python manage_keys.py create "My App" --email user@example.com
+python manage_keys.py create "CI Pipeline" --permissions read write
+python manage_keys.py revoke sk_abc123...
+python manage_keys.py inspect sk_abc123...
+```
+
+**Validation flow in application code:**
+1. Extract key from request (header or query param)
+2. DynamoDB `GetItem` by `key_id`
+3. Check `active`, check `expires_at`
+4. Update `last_used_at` (fire-and-forget)
+5. Return `Identity` object with name, permissions, environments
+
+### 2. Google OAuth (human users)
+
+For browser-based sign-in — dashboards, admin panels, web apps.
+
+- Standard OAuth 2.0 authorization code flow
+- Google client credentials stored in Secrets Manager (`tokenburner/google-oauth`)
+- Flask session cookies after successful login
+- Routes: `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/status`
+
+**Google OAuth setup (one-time):**
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create an OAuth 2.0 Client ID (Web application)
+3. Add authorized redirect URIs: `https://your-product.your-domain.com/auth/callback`
+4. Store client_id and client_secret in Secrets Manager:
+   ```bash
+   aws secretsmanager put-secret-value \
+     --secret-id tokenburner/google-oauth \
+     --secret-string '{"client_id":"YOUR_ID","client_secret":"YOUR_SECRET"}'
+   ```
+
+### Auth decorators
+
+```python
+from auth import require_auth, require_write, get_identity
+
+@app.route("/api/data")
+@require_auth          # API key OR Google session
+def get_data():
+    identity = request.identity
+    ...
+
+@app.route("/api/data", methods=["POST"])
+@require_write         # requires "write" permission
+def create_data():
+    ...
+```
+
+### API Documentation (Swagger)
+
+Every product auto-generates OpenAPI docs:
+- **Swagger UI**: `/docs` — interactive API explorer with auth
+- **OpenAPI spec**: `/openapi.json` — machine-readable spec
+- Powered by flasgger — docstrings become API documentation
+- Both auth methods shown in Swagger UI (API key and Google OAuth)
 
 ## Deployment
 
@@ -479,9 +553,13 @@ Products use environment variables for configuration. In cloud, these come from 
 | Variable | Source | Purpose |
 |----------|--------|---------|
 | DATABASE_URL | Secrets Manager → Fargate env | PostgreSQL connection string |
+| DB_SECRET_JSON | Secrets Manager → Fargate secret | JSON with host/port/username/password |
 | AWS_REGION | Fargate default | Region for AWS SDK calls |
 | BEDROCK_MODEL | Fargate env | LLM model ID for AI features |
 | API_KEYS_TABLE | CDK export | DynamoDB table name for API keys |
+| GOOGLE_CLIENT_ID | Secrets Manager → Fargate secret | Google OAuth client ID |
+| GOOGLE_CLIENT_SECRET | Secrets Manager → Fargate secret | Google OAuth client secret |
+| SECRET_KEY | Fargate env | Flask session encryption key |
 | S3_BUCKET | CDK export | Product-specific S3 bucket |
 | LOG_LEVEL | Fargate env | Python logging level (default: INFO) |
 
@@ -490,27 +568,30 @@ Products use environment variables for configuration. In cloud, these come from 
 ```
 stack/
 ├── base-stack/
-│   └── cdk/
-│       ├── app.py           # CDK app entry
-│       ├── stack.py         # Base stack (VPC, ALB, ECS, Aurora, Route53)
-│       ├── cdk.json
-│       └── requirements.txt
+│   ├── cdk/
+│   │   ├── app.py           # CDK app entry
+│   │   ├── stack.py         # Base stack (VPC, ALB, ECS, Aurora, Route53, DynamoDB, OAuth)
+│   │   ├── cdk.json
+│   │   └── requirements.txt
+│   └── manage_keys.py       # API key management CLI (create, list, revoke, inspect)
 ├── product-template/
 │   ├── app/
-│   │   ├── main.py          # Flask app template
-│   │   ├── db.py            # Database connection template
-│   │   └── migrate.py       # Migration runner template
+│   │   ├── main.py          # Flask app with Swagger docs (/docs, /openapi.json)
+│   │   ├── auth.py          # Dual auth: API keys (DynamoDB) + Google OAuth
+│   │   ├── db.py            # Database connection pool
+│   │   └── migrate.py       # Migration runner
 │   ├── migrations/
 │   │   └── 001_initial.sql  # Baseline migration
 │   ├── static/
 │   │   └── index.html       # Starter frontend
 │   ├── cdk/
 │   │   ├── app.py           # Product CDK app entry
-│   │   ├── stack.py         # Product stack template
+│   │   ├── stack.py         # Product stack (Fargate, ALB rule, DNS, auth grants)
 │   │   ├── cdk.json
 │   │   └── requirements.txt
 │   ├── Dockerfile
-│   ├── requirements.txt
+│   ├── docker-compose.yml   # Local development
+│   ├── requirements.txt     # Flask, flasgger, psycopg2, boto3
 │   └── tokenburner.md       # Context file template
 ├── patterns/
 │   ├── static-spa/          # S3 + CloudFront pattern
