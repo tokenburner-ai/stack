@@ -634,261 +634,61 @@ Every product auto-generates OpenAPI docs:
 - Powered by flasgger — docstrings become API documentation
 - Both auth methods shown in Swagger UI (API key and Google OAuth)
 
-## Deployment
+## Operations
 
-### Deploy Base Stack (once)
-
-```bash
-cd base-stack/cdk
-pip install -r requirements.txt
-
-# Dev mode (~$1/mo — DynamoDB + S3 + Secrets Manager only)
-cdk deploy -c dev_mode=true
-
-# Full stack (~$71/mo — VPC, ALB, ECS, Aurora, NAT Gateway)
-cdk deploy
-```
-
-### Create an API Key (after base stack deploy)
+Use the tokenburner CLI to load context for any operation. The CLI confirms your AWS account, then outputs task-specific instructions for the AI to follow.
 
 ```bash
-cd base-stack
-python manage_keys.py create "dev-admin" --permissions read write
-# Save the sk_... key — you'll need it to access your product's API
+python3 tokenburner.py <command>
 ```
 
-### Deploy a Product
+| Command | Context File | Purpose |
+|---------|-------------|---------|
+| `deploy` | context/deploy.md | Deploy base + product, verify (9 checks), present results + costs |
+| `status` | context/status.md | List stacks, resources, costs, health check |
+| `destroy` | context/destroy.md | Tear down all tokenburner stacks (confirms before destroying) |
+| `extend` | context/extend-api.md | Add new API routes, migrations, OAS3 docstrings |
+| `domain` | context/setup-domain.md | Attach custom domain + SSL (planned) |
+| `upgrade neon` | context/upgrade-neon.md | Migrate SQLite-on-S3 to Neon Postgres (planned) |
+
+### Configuration
+
+On first run, the CLI creates `.tokenburner.json`:
+
+```json
+{
+  "aws_profile": "tokenburner",
+  "region": "us-west-2",
+  "product_name": "demo",
+  "account_id": "123456789012"
+}
+```
+
+Every command verifies AWS credentials against this config before proceeding.
+
+### Quick Reference
 
 ```bash
-cd my-product/cdk
-pip install -r requirements.txt
+# First time setup + deploy
+python3 tokenburner.py deploy
 
-# Dev mode ($0/mo — Lambda + CloudFront + SQLite-on-S3)
-cdk deploy -c dev_mode=true -c product_name=my-product
+# Check what's running and what it costs
+python3 tokenburner.py status
 
-# Full stack (~$8/mo — Fargate + ALB)
-cdk deploy -c product_name=my-product -c subdomain=my-product
+# Add new API endpoints
+python3 tokenburner.py extend
+
+# Tear everything down
+python3 tokenburner.py destroy
 ```
 
-### Post-Deploy: Verify & Present to User
+### Deploy a Product Update
 
-**AI assistant: after deploying the base stack + product, run these verification checks yourself and present the results to the user.** Do not ask the user to run them. The user's first experience should be seeing their working app.
-
-```bash
-# Extract the CloudFront URL and API key from deploy outputs
-# Then run all 6 checks:
-
-# 1. Health check
-curl -s https://<cloudfront-domain>/health
-
-# 2. Users API (authenticated)
-curl -s https://<cloudfront-domain>/api/users -H "Authorization: Bearer <api-key>"
-
-# 3. Accounts API (authenticated)
-curl -s https://<cloudfront-domain>/api/accounts -H "Authorization: Bearer <api-key>"
-
-# 4. Roles API (authenticated)
-curl -s https://<cloudfront-domain>/api/roles -H "Authorization: Bearer <api-key>"
-
-# 5. Auth enforcement (unauthenticated — should return 401)
-curl -s -o /dev/null -w "%{http_code}" https://<cloudfront-domain>/api/users
-
-# 6. Frontend loads (mock login SPA)
-curl -s https://<cloudfront-domain>/ | head -3
-
-# 7. Smoke test writes — verify CRUD actually works end-to-end
-# Create an account
-curl -s -X POST https://<cloudfront-domain>/api/accounts \
-  -H "Authorization: Bearer <api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Smoke Test Inc", "slug": "smoke-test", "plan": "free"}'
-
-# Create a role
-curl -s -X POST https://<cloudfront-domain>/api/roles \
-  -H "Authorization: Bearer <api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "tester", "description": "Smoke test role", "permissions": "read"}'
-
-# Create a user on the new account
-curl -s -X POST https://<cloudfront-domain>/api/users \
-  -H "Authorization: Bearer <api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Smoke Test User", "email": "smoke@test.com", "account_id": 2, "role_id": 4}'
-
-# Update the account
-curl -s -X PUT https://<cloudfront-domain>/api/accounts/2 \
-  -H "Authorization: Bearer <api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"plan": "pro"}'
-
-# Verify the writes persisted
-curl -s https://<cloudfront-domain>/api/accounts -H "Authorization: Bearer <api-key>"
-
-# 8. Swagger UI loads
-curl -s https://<cloudfront-domain>/api-docs | grep -o '<title>.*</title>'
-
-# 9. OpenAPI spec is valid (no swagger/openapi conflict)
-curl -s https://<cloudfront-domain>/openapi.json | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'swagger' not in d, 'swagger field present'; print(f'OAS {d[\"openapi\"]} — {len(d[\"paths\"])} paths')"
-```
-
-**Then present everything to the user like this:**
-
----
-
-Your app is live. Here's everything you need:
-
-**App URL:** `https://<cloudfront-domain>`
-**API Key:** `<api-key>`
-
-Open the URL in your browser, paste the API key, and you'll see the mock login with 3 demo users.
-
-| Step | Time |
-|------|------|
-| Base stack deploy (dev mode) | ~1 min |
-| Create API key | < 1 min |
-| Product deploy (Lambda + CloudFront) | ~5 min |
-| **Total** | **~7 min** |
-
-**Verification (all 9 checks pass):**
-- `/health` → `{"db_mode":"sqlite","status":"ok"}`
-- `/api/users` → 3 seed users (admin, editor, viewer)
-- `/api/accounts` → 1 demo account
-- `/api/roles` → 3 roles with permissions
-- Unauthenticated request → 401 (auth enforced)
-- `/` → Mock login SPA loads
-- CRUD smoke test → create account, role, user, update account — all return 201/200
-- `/api-docs` → Swagger UI loads
-- `/openapi.json` → valid OAS 3.0.3 spec, no swagger field
-
-**Monthly cost estimate:** After verification, list the actual deployed resources and their costs:
-
-```bash
-# List resources in both stacks
-AWS_PROFILE=tokenburner aws cloudformation list-stack-resources --stack-name tokenburner-base \
-  --query 'StackResourceSummaries[].{Type:ResourceType,Id:LogicalResourceId}' --output table
-AWS_PROFILE=tokenburner aws cloudformation list-stack-resources --stack-name tokenburner-<product_name> \
-  --query 'StackResourceSummaries[].{Type:ResourceType,Id:LogicalResourceId}' --output table
-```
-
-Then present a cost breakdown like this:
-
-| Stack | Resource | Cost |
-|-------|----------|------|
-| base | DynamoDB (on-demand, minimal reads) | ~$0.00/mo |
-| base | S3 bucket (SQLite snapshots, <1 MB) | ~$0.01/mo |
-| base | Secrets Manager (1 secret) | $0.40/mo |
-| product | Lambda (free tier: 1M req/mo) | $0.00/mo |
-| product | CloudFront (free tier: 1TB/mo) | $0.00/mo |
-| product | IAM | $0.00/mo |
-| **Total** | | **~$0.42/mo** |
-
-Note: Secrets Manager is the only real cost. Lambda and CloudFront stay free at dev-mode traffic levels.
-
----
-
-This is the user's first "wow" moment. Make it count — show them a working product, not a wall of terminal output.
-
-### Extending the API
-
-To add a new resource (e.g., "products"), follow this pattern:
-
-**1. Create a migration** — `migrations/003_products.sql`
-
-```sql
-CREATE TABLE IF NOT EXISTS products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    price REAL NOT NULL,
-    account_id INTEGER REFERENCES accounts(id),
-    active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-```
-
-Note: Use SQLite-compatible syntax for dev mode. The `db.py` layer handles translation for Postgres.
-
-**2. Add routes to `main.py`** following the existing CRUD pattern:
-
-- `@require_auth` for GET (read), `@require_write` for POST/PUT (write)
-- Return `jsonify(rows)` for lists, `jsonify(rows[0])` for single items
-- POST returns 201, PUT returns 200, missing records return 404
-- Use parameterized queries (`%s` placeholders) — `db.py` translates to `?` for SQLite
-
-**3. Write OAS3 docstrings** — flasgger reads these to generate `/openapi.json` and Swagger UI automatically.
-
-IMPORTANT: Use OpenAPI 3.0 format, NOT Swagger 2.0. The key differences:
-
-```python
-# GET with path parameter
-@app.route("/api/products/<int:product_id>", methods=["GET"])
-@require_auth
-def get_product(product_id):
-    """Get product by ID.
-    ---
-    tags: [Products]
-    parameters:
-      - name: product_id
-        in: path
-        required: true
-        schema:
-          type: integer          # OAS3: type is inside schema
-    responses:
-      200:
-        description: Product object
-      404:
-        description: Not found
-    """
-
-# POST/PUT with JSON body
-@app.route("/api/products", methods=["POST"])
-@require_write
-def create_product():
-    """Create a product.
-    ---
-    tags: [Products]
-    requestBody:                   # OAS3: NOT "parameters: in: body"
-      required: true
-      content:
-        application/json:          # This tells Swagger UI to send Content-Type header
-          schema:
-            type: object
-            required: [name, price, account_id]
-            properties:
-              name:
-                type: string
-              price:
-                type: number
-              account_id:
-                type: integer
-    responses:
-      201:
-        description: Created product
-      400:
-        description: Validation error
-    """
-```
-
-Common mistakes to avoid:
-- `parameters: in: body` is Swagger 2.0 — use `requestBody` for OAS3
-- `type: integer` directly on a path param is Swagger 2.0 — wrap in `schema:`
-- Missing `content: application/json:` causes 415 Unsupported Media Type in Swagger UI
-
-**4. Deploy the update**
+After code changes, redeploy the Lambda (~25 seconds):
 
 ```bash
 cd product-template/cdk
 AWS_PROFILE=tokenburner cdk deploy -c dev_mode=true -c product_name=<name>
-```
-
-Lambda updates in ~25 seconds. New routes appear in Swagger UI automatically — no manual spec editing.
-
-**5. Smoke test the new endpoints** — run POST/GET/PUT curls to verify before handing off to the user.
-
-### Tear Down a Product (without affecting others)
-
-```bash
-cd my-product/cdk
-cdk destroy -c dev_mode=true -c product_name=my-product
 ```
 
 ### Optional: Run Locally
@@ -916,28 +716,6 @@ cdk deploy -c product_name=my-product -c domain_name=myproduct.com -c subdomain=
 ```
 
 See `website/README.md` for full domain setup guide (Route53, external registrars, adding a domain later).
-
-### Tear Down Everything
-
-Tokenburner only destroys resources it created. Resources that existed before tokenburner (VPCs, ALBs, clusters, databases passed in via `existing_*` context params) are **never touched** by `cdk destroy`. Only resources with the `ManagedBy: tokenburner` tag were created by the stack.
-
-```bash
-# Destroy products first, then base
-cd my-product/cdk && cdk destroy my-product-stack
-cd website/cdk && cdk destroy tokenburner-my-product-website
-cd base-stack/cdk && cdk destroy tokenburner-base
-```
-
-**Safe to destroy:**
-- Product stacks (Fargate services, ALB rules, DNS records, log groups)
-- Website stacks (S3 buckets, CloudFront distributions, certs, DNS records)
-- Base stack (VPC, ALB, ECS cluster, Aurora, DynamoDB — only if tokenburner created them)
-
-**Never destroyed:**
-- Resources imported via `existing_vpc_id`, `existing_alb_arn`, `existing_ecs_cluster_name`, `existing_db_cluster_id`
-- Resources managed by other IaC tools (Terraform, other CDK stacks)
-- Data in Aurora (removal policy = SNAPSHOT — a final snapshot is taken)
-- DynamoDB API keys table (removal policy = RETAIN)
 
 ## Environment Variables
 
@@ -1002,7 +780,16 @@ stack/
 │   ├── static-spa/          # S3 + CloudFront pattern
 │   ├── ai-chat/             # Bedrock + SSE pattern
 │   └── background-job/      # Lambda pattern
-└── tokenburner.md           # This file
+├── tokenburner.py           # CLI — context loader for AI-assisted operations
+├── tokenburner.md           # This file — main project context
+├── .tokenburner.json        # CLI config (AWS profile, region, product name)
+└── context/
+    ├── deploy.md            # Deploy flow: base + product + verify + costs
+    ├── status.md            # Status: stacks, resources, health, costs
+    ├── destroy.md           # Destroy: list resources, confirm, tear down
+    ├── extend-api.md        # Add routes, migrations, OAS3 docstrings
+    ├── setup-domain.md      # Custom domain + SSL (planned)
+    └── upgrade-neon.md      # SQLite → Neon Postgres migration (planned)
 ```
 
 ## Creating a New Product

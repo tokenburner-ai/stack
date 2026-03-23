@@ -7,4 +7,5 @@ cdk.out/
 cdk.context.json
 *.egg-info/
 .env
+.tokenburner.json
 *.exe
