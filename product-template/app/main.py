@@ -21,9 +21,9 @@ try:
         "static_url_path": "/flasgger_static",
         "swagger_ui": True,
         "specs_route": "/docs",
+        "openapi": "3.0.3",
     }
     swagger_template = {
-        "openapi": "3.0.3",
         "info": {
             "title": os.environ.get("PRODUCT_NAME", "Tokenburner Product"),
             "version": "1.0.0",
@@ -115,8 +115,9 @@ def get_account(account_id):
     parameters:
       - name: account_id
         in: path
-        type: integer
         required: true
+        schema:
+          type: integer
     responses:
       200:
         description: Account object
@@ -135,21 +136,21 @@ def create_account():
     """Create a new account.
     ---
     tags: [Accounts]
-    parameters:
-      - name: body
-        in: body
-        required: true
-        schema:
-          type: object
-          required: [name, slug]
-          properties:
-            name:
-              type: string
-            slug:
-              type: string
-            plan:
-              type: string
-              default: free
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, slug]
+            properties:
+              name:
+                type: string
+              slug:
+                type: string
+              plan:
+                type: string
+                default: free
     responses:
       201:
         description: Created account
@@ -176,22 +177,24 @@ def update_account(account_id):
     parameters:
       - name: account_id
         in: path
-        type: integer
-        required: true
-      - name: body
-        in: body
         required: true
         schema:
-          type: object
-          properties:
-            name:
-              type: string
-            slug:
-              type: string
-            plan:
-              type: string
-            active:
-              type: boolean
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              name:
+                type: string
+              slug:
+                type: string
+              plan:
+                type: string
+              active:
+                type: boolean
     responses:
       200:
         description: Updated account
@@ -248,8 +251,9 @@ def get_user(user_id):
     parameters:
       - name: user_id
         in: path
-        type: integer
         required: true
+        schema:
+          type: integer
     responses:
       200:
         description: User object
@@ -275,22 +279,22 @@ def create_user():
     """Create a new user.
     ---
     tags: [Users]
-    parameters:
-      - name: body
-        in: body
-        required: true
-        schema:
-          type: object
-          required: [name, email, account_id]
-          properties:
-            name:
-              type: string
-            email:
-              type: string
-            account_id:
-              type: integer
-            role_id:
-              type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, email, account_id]
+            properties:
+              name:
+                type: string
+              email:
+                type: string
+              account_id:
+                type: integer
+              role_id:
+                type: integer
     responses:
       201:
         description: Created user
@@ -318,22 +322,24 @@ def update_user(user_id):
     parameters:
       - name: user_id
         in: path
-        type: integer
-        required: true
-      - name: body
-        in: body
         required: true
         schema:
-          type: object
-          properties:
-            name:
-              type: string
-            email:
-              type: string
-            role_id:
-              type: integer
-            active:
-              type: boolean
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              name:
+                type: string
+              email:
+                type: string
+              role_id:
+                type: integer
+              active:
+                type: boolean
     responses:
       200:
         description: Updated user
@@ -379,21 +385,21 @@ def create_role():
     """Create a new role.
     ---
     tags: [Roles]
-    parameters:
-      - name: body
-        in: body
-        required: true
-        schema:
-          type: object
-          required: [name]
-          properties:
-            name:
-              type: string
-            description:
-              type: string
-            permissions:
-              type: string
-              default: read
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name]
+            properties:
+              name:
+                type: string
+              description:
+                type: string
+              permissions:
+                type: string
+                default: read
     responses:
       201:
         description: Created role
@@ -420,8 +426,9 @@ def list_user_emails(user_id):
     parameters:
       - name: user_id
         in: path
-        type: integer
         required: true
+        schema:
+          type: integer
     responses:
       200:
         description: Array of email addresses
@@ -441,20 +448,22 @@ def add_user_email(user_id):
     parameters:
       - name: user_id
         in: path
-        type: integer
-        required: true
-      - name: body
-        in: body
         required: true
         schema:
-          type: object
-          required: [address]
-          properties:
-            address:
-              type: string
-            primary:
-              type: boolean
-              default: false
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [address]
+            properties:
+              address:
+                type: string
+              primary:
+                type: boolean
+                default: false
     responses:
       201:
         description: Added email

@@ -695,6 +695,40 @@ curl -s -o /dev/null -w "%{http_code}" https://<cloudfront-domain>/api/users
 
 # 6. Frontend loads (mock login SPA)
 curl -s https://<cloudfront-domain>/ | head -3
+
+# 7. Smoke test writes — verify CRUD actually works end-to-end
+# Create an account
+curl -s -X POST https://<cloudfront-domain>/api/accounts \
+  -H "Authorization: Bearer <api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Smoke Test Inc", "slug": "smoke-test", "plan": "free"}'
+
+# Create a role
+curl -s -X POST https://<cloudfront-domain>/api/roles \
+  -H "Authorization: Bearer <api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "tester", "description": "Smoke test role", "permissions": "read"}'
+
+# Create a user on the new account
+curl -s -X POST https://<cloudfront-domain>/api/users \
+  -H "Authorization: Bearer <api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Smoke Test User", "email": "smoke@test.com", "account_id": 2, "role_id": 4}'
+
+# Update the account
+curl -s -X PUT https://<cloudfront-domain>/api/accounts/2 \
+  -H "Authorization: Bearer <api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"plan": "pro"}'
+
+# Verify the writes persisted
+curl -s https://<cloudfront-domain>/api/accounts -H "Authorization: Bearer <api-key>"
+
+# 8. Swagger UI loads
+curl -s https://<cloudfront-domain>/api-docs | grep -o '<title>.*</title>'
+
+# 9. OpenAPI spec is valid (no swagger/openapi conflict)
+curl -s https://<cloudfront-domain>/openapi.json | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'swagger' not in d, 'swagger field present'; print(f'OAS {d[\"openapi\"]} — {len(d[\"paths\"])} paths')"
 ```
 
 **Then present everything to the user like this:**
@@ -715,13 +749,16 @@ Open the URL in your browser, paste the API key, and you'll see the mock login w
 | Product deploy (Lambda + CloudFront) | ~5 min |
 | **Total** | **~7 min** |
 
-**Verification (all 6 checks pass):**
+**Verification (all 9 checks pass):**
 - `/health` → `{"db_mode":"sqlite","status":"ok"}`
 - `/api/users` → 3 seed users (admin, editor, viewer)
 - `/api/accounts` → 1 demo account
 - `/api/roles` → 3 roles with permissions
 - Unauthenticated request → 401 (auth enforced)
 - `/` → Mock login SPA loads
+- CRUD smoke test → create account, role, user, update account — all return 201/200
+- `/api-docs` → Swagger UI loads
+- `/openapi.json` → valid OAS 3.0.3 spec, no swagger field
 
 **Monthly cost:** ~$1/mo (DynamoDB + S3 + Secrets Manager). Lambda and CloudFront are free tier.
 
