@@ -760,7 +760,29 @@ Open the URL in your browser, paste the API key, and you'll see the mock login w
 - `/api-docs` → Swagger UI loads
 - `/openapi.json` → valid OAS 3.0.3 spec, no swagger field
 
-**Monthly cost:** ~$1/mo (DynamoDB + S3 + Secrets Manager). Lambda and CloudFront are free tier.
+**Monthly cost estimate:** After verification, list the actual deployed resources and their costs:
+
+```bash
+# List resources in both stacks
+AWS_PROFILE=tokenburner aws cloudformation list-stack-resources --stack-name tokenburner-base \
+  --query 'StackResourceSummaries[].{Type:ResourceType,Id:LogicalResourceId}' --output table
+AWS_PROFILE=tokenburner aws cloudformation list-stack-resources --stack-name tokenburner-<product_name> \
+  --query 'StackResourceSummaries[].{Type:ResourceType,Id:LogicalResourceId}' --output table
+```
+
+Then present a cost breakdown like this:
+
+| Stack | Resource | Cost |
+|-------|----------|------|
+| base | DynamoDB (on-demand, minimal reads) | ~$0.00/mo |
+| base | S3 bucket (SQLite snapshots, <1 MB) | ~$0.01/mo |
+| base | Secrets Manager (1 secret) | $0.40/mo |
+| product | Lambda (free tier: 1M req/mo) | $0.00/mo |
+| product | CloudFront (free tier: 1TB/mo) | $0.00/mo |
+| product | IAM | $0.00/mo |
+| **Total** | | **~$0.42/mo** |
+
+Note: Secrets Manager is the only real cost. Lambda and CloudFront stay free at dev-mode traffic levels.
 
 ---
 
