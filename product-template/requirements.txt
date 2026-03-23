@@ -3,3 +3,4 @@ gunicorn>=22.0
 psycopg2-binary>=2.9
 boto3>=1.34
 flasgger>=0.9.7
+apig-wsgi>=2.18

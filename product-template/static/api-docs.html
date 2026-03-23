@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Docs — Tokenburner</title>
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+    <style>
+        body { margin: 0; background: #1a1a2e; }
+        .swagger-ui { max-width: 1200px; margin: 0 auto; }
+        .swagger-ui .topbar { display: none; }
+        .tb-bar {
+            background: #0d0d12; border-bottom: 1px solid #1a1a24;
+            padding: 0.75rem 1.5rem; display: flex; align-items: center;
+            justify-content: space-between; font-family: system-ui, sans-serif;
+        }
+        .tb-bar .brand {
+            font-weight: 700; font-size: 1rem; color: #f0f0f0;
+        }
+        .tb-bar .brand span {
+            font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 4px;
+            background: rgba(74,222,128,0.15); color: #4ade80; margin-left: 0.5rem;
+        }
+        .tb-bar a {
+            color: #f97316; text-decoration: none; font-size: 0.85rem;
+            font-weight: 500;
+        }
+        .tb-bar a:hover { text-decoration: underline; }
+        /* Dark theme overrides for Swagger UI */
+        .swagger-ui .opblock-tag { color: #e0e0e0 !important; border-bottom-color: #2a2a3a !important; }
+        .swagger-ui .opblock .opblock-summary-description { color: #aaa !important; }
+        .swagger-ui .info .title { color: #f0f0f0 !important; }
+        .swagger-ui .info p, .swagger-ui .info li { color: #ccc !important; }
+        .swagger-ui .scheme-container { background: #0d0d12 !important; box-shadow: none !important; }
+        .swagger-ui select { background: #1a1a24 !important; color: #f0f0f0 !important; border-color: #2a2a34 !important; }
+        .swagger-ui .btn.authorize { color: #4ade80 !important; border-color: #4ade80 !important; }
+        .swagger-ui .authorization__btn.locked svg { fill: #4ade80 !important; }
+    </style>
+</head>
+<body>
+
+<div class="tb-bar">
+    <div class="brand">Tokenburner <span>API Docs</span></div>
+    <a href="/">Back to Dashboard</a>
+</div>
+
+<div id="swagger-ui"></div>
+
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>
+const apiKey = localStorage.getItem('tb_api_key') || '';
+
+const ui = SwaggerUIBundle({
+    url: '/openapi.json',
+    dom_id: '#swagger-ui',
+    deepLinking: true,
+    presets: [
+        SwaggerUIBundle.presets.apis,
+        SwaggerUIBundle.SwaggerUIStandalonePreset,
+    ],
+    layout: 'BaseLayout',
+    persistAuthorization: true,
+    onComplete: function() {
+        if (apiKey) {
+            ui.preauthorizeApiKey('ApiKeyAuth', 'Bearer ' + apiKey);
+        }
+    }
+});
+</script>
+</body>
+</html>

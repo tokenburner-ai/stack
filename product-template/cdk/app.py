@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Product CDK app — imports tokenburner base stack resources."""
+"""Product CDK app — deploys as Lambda+CloudFront (dev) or Fargate+ALB (full)."""
 
 import os
 import aws_cdk as cdk
-from stack import ProductStack
+from stack import DevProductStack, ProductStack
 
 app = cdk.App()
 
@@ -14,13 +14,22 @@ env = cdk.Environment(
 
 product_name = app.node.try_get_context("product_name") or "my-product"
 subdomain = app.node.try_get_context("subdomain") or product_name
+dev_mode = app.node.try_get_context("dev_mode") in (True, "true", "True", "1", "yes")
 
-ProductStack(
-    app,
-    f"tokenburner-{product_name}",
-    env=env,
-    product_name=product_name,
-    subdomain=subdomain,
-)
+if dev_mode:
+    DevProductStack(
+        app,
+        f"tokenburner-{product_name}",
+        env=env,
+        product_name=product_name,
+    )
+else:
+    ProductStack(
+        app,
+        f"tokenburner-{product_name}",
+        env=env,
+        product_name=product_name,
+        subdomain=subdomain,
+    )
 
 app.synth()

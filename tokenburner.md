@@ -10,12 +10,14 @@ This stack is designed for agentic development. You start in the cloud, spend to
 
 The workflow:
 1. Set up your AWS account (15 minutes)
-2. Point your AI assistant at this repo
-3. Describe what you want to build
-4. The AI deploys infrastructure, writes code, iterates until it works
-5. You have a live product — then you can optimize, go local, cut costs
+2. Deploy the base stack in dev mode (`cdk deploy -c dev_mode=true`) — ~$1/mo
+3. Deploy your product (`cdk deploy -c dev_mode=true -c product_name=my-product`) — $0/mo
+4. You have a live HTTPS URL with a working API in minutes
+5. Point your AI assistant at this repo, describe what you want to build
+6. The AI writes code, deploys updates, iterates until it works
+7. When ready for production, switch to full stack mode (~$80/mo)
 
-You can always back off to local development later. But getting something real running in the cloud first means you're refining a working product, not speculating about one.
+Everything runs in the cloud from minute one. Dev mode uses Lambda + CloudFront + SQLite-on-S3 for near-zero cost. You can optionally run locally with Docker Compose, but the default dev flow is 100% cloud.
 
 ## AWS Account Setup
 
@@ -25,15 +27,50 @@ Before your AI assistant can build anything, you need these enabled in your AWS 
 
 1. **AWS Account** with admin access
 2. **AWS CLI v2** installed and configured (`aws configure`)
-3. **AWS CDK** installed (`npm install -g aws-cdk`)
-4. **Python 3.12+** installed
-5. **Docker** installed (for CDK asset bundling)
+3. **Node.js 18+** installed (required by CDK) — `node --version`
+4. **AWS CDK CLI** installed — `npm install -g aws-cdk` then verify with `cdk --version`
+5. **Python 3.12+** installed — `python3 --version`
+6. **Docker** installed (for CDK asset bundling and local development) — `docker --version`
+
+**Quick prerequisite check** — run this before anything else:
+
+```bash
+# Verify all tools are installed
+echo "--- Prerequisites Check ---"
+node --version 2>/dev/null || echo "MISSING: Node.js — install from https://nodejs.org/ or: sudo apt install nodejs npm"
+cdk --version 2>/dev/null || echo "MISSING: AWS CDK — run: npm install -g aws-cdk"
+python3 --version 2>/dev/null || echo "MISSING: Python 3 — install from https://python.org/"
+aws --version 2>/dev/null || echo "MISSING: AWS CLI — install from https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+docker --version 2>/dev/null || echo "MISSING: Docker — install from https://docs.docker.com/get-docker/"
+echo "--- End Check ---"
+```
+
+If anything says MISSING, install it before continuing. On Ubuntu/Debian:
+
+```bash
+# Node.js (via NodeSource for latest LTS)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Then CDK
+npm install -g aws-cdk
+
+# Python (usually pre-installed)
+sudo apt install -y python3 python3-pip python3-venv
+
+# AWS CLI v2
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip && sudo ./aws/install
+
+# Docker
+sudo apt install -y docker.io && sudo usermod -aG docker $USER
+```
 
 ### Account Discovery
 
-After configuring the AWS CLI, have your AI assistant run the discovery commands below. This audits your account so the stack can reuse existing infrastructure and give you specific guidance on what's missing.
+After configuring the AWS CLI, your AI assistant should run the prerequisite check and discovery commands below **autonomously** — do not ask the user to run them. The assistant should fix any missing tools, then audit the account and report what's ready vs. what needs action.
 
-**Run all of these — the AI assistant will interpret the results:**
+**AI assistant: run all of these yourself and interpret the results:**
 
 ```bash
 # Identity — who am I and what account is this?
@@ -167,38 +204,58 @@ If you don't have a domain, the stack works fine with ALB-provided DNS (e.g., `t
 
 ### Cost Expectations
 
-At idle with no traffic, the full stack costs roughly:
+**Dev mode** (SQLite-on-S3, no Aurora/NAT/ALB):
+
+| Resource | Cost | Notes |
+|----------|------|-------|
+| S3, DynamoDB, Secrets Manager | < $1/mo | Pay-per-request, negligible at dev scale |
+| Bedrock tokens | Pay-per-use | ~$3/M input, ~$15/M output (Sonnet) |
+| **Total dev mode** | **~$1/mo** | Plus token costs during active development |
+
+**Full stack** (production, all resources running):
 
 | Resource | Idle Cost | Notes |
 |----------|-----------|-------|
-| Aurora Serverless v2 (0.5 ACU min) | ~$22/mo | Scales to zero paused after 5 min inactivity |
+| NAT Gateway | ~$32/mo | Fixed cost, required for private subnet internet |
+| Aurora Serverless v2 (0.5 ACU min) | ~$22/mo | Scales to zero when paused |
 | ALB | ~$16/mo | Fixed cost, shared across all products |
 | ECS Fargate (1 task, 256 CPU) | ~$8/mo | Per running service |
 | Route53 hosted zone | $0.50/mo | Per domain |
-| CloudWatch Logs | ~$1/mo | Minimal at low volume |
-| S3, DynamoDB, Secrets Manager | < $1/mo | Pay-per-request at low scale |
-| **Total idle baseline** | **~$48/mo** | For the full platform with one product running |
+| CloudWatch Logs, S3, DynamoDB | < $2/mo | Minimal at low volume |
+| **Total idle baseline** | **~$80/mo** | For the full platform with one product running |
 
-Bedrock tokens are pay-per-use: ~$3/M input tokens, ~$15/M output tokens (Sonnet). A heavy development day might cost $5-15 in tokens. This is intentional — you're trading money for velocity.
+**Recommended workflow:**
+1. Start in dev mode (SQLite-on-S3) — build your API, iterate on schemas (~$1/mo)
+2. Switch to Neon free tier when you need real Postgres ($0/mo)
+3. Deploy full stack when ready for production (~$80/mo)
+4. Power down expensive resources when not actively testing (see below)
 
-**To cut costs later:**
-- Pause Aurora when not in use (scales to zero)
-- Develop locally with Docker Compose against a local Postgres
-- Switch to Haiku for production AI features
-- Tear down dev stacks when not actively building
+A heavy development day might cost $5-15 in Bedrock tokens. This is intentional — you're trading money for velocity.
+
+**Power down** (stop paying for idle production resources):
+- Stop Aurora cluster (`aws rds stop-db-cluster`)
+- Delete NAT Gateway (recreate when needed)
+- Scale ECS services to zero
+- ALB is the hardest to avoid — consider tearing down between sessions
 
 ## Architecture
+
+### Dev Mode (~$1/mo)
+
+```
+User → CloudFront (HTTPS) → Lambda (Flask app) → SQLite-on-S3
+                                                → DynamoDB (API keys)
+```
+
+Three resources: Lambda serves your Flask app (API + static files), CloudFront provides HTTPS + caching, SQLite-on-S3 is your database. Deploy in minutes, iterate instantly, costs essentially nothing.
+
+### Full Stack (~$80/mo, production)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Route53 (DNS)                            │
 │                    *.your-domain.com                             │
 └───────────────────────────┬─────────────────────────────────────┘
-                            │
-                   ┌────────▼────────┐
-                   │   ACM (TLS)     │
-                   │ Wildcard cert   │
-                   └────────┬────────┘
                             │
               ┌─────────────▼─────────────────┐
               │   Application Load Balancer    │
@@ -208,7 +265,6 @@ Bedrock tokens are pay-per-use: ~$3/M input tokens, ~$15/M output tokens (Sonnet
         ┌────────▼───┐ ┌───▼────┐ ┌───▼────────┐
         │ Product A  │ │Product │ │  Product C  │
         │ (Fargate)  │ │   B    │ │  (Fargate)  │
-        │            │ │(Fargate│ │             │
         └─────┬──────┘ └───┬───┘ └──────┬──────┘
               │            │             │
               └────────────┼─────────────┘
@@ -216,7 +272,6 @@ Bedrock tokens are pay-per-use: ~$3/M input tokens, ~$15/M output tokens (Sonnet
               ┌────────────▼────────────┐
               │   Aurora PostgreSQL      │
               │   Serverless v2         │
-              │   (shared or per-product)│
               └─────────────────────────┘
 
         ┌──────────┐  ┌──────────┐  ┌──────────┐
@@ -229,31 +284,40 @@ Bedrock tokens are pay-per-use: ~$3/M input tokens, ~$15/M output tokens (Sonnet
 
 ### Base Stack (deploys once)
 
-The foundation that all products share. Deployed as a single CDK stack.
+The foundation that all products share. Deployed as a single CDK stack with a `dev_mode` flag.
 
 ```
 base-stack/
 ├── cdk/
 │   ├── app.py              # CDK app entry point
-│   ├── stack.py            # Base stack definition
+│   ├── stack.py            # Base stack definition (dev_mode flag)
 │   ├── cdk.json            # CDK config
 │   └── requirements.txt    # CDK dependencies
+├── manage_keys.py          # API key management CLI
 └── tokenburner.md          # This file
 ```
 
-**Resources created:**
+**Dev mode resources** (`-c dev_mode=true`):
 
-| Resource | Purpose | Shared? |
-|----------|---------|---------|
-| VPC (2 AZs, public + private subnets) | Networking foundation | Yes — all products |
-| Application Load Balancer | HTTPS ingress, host-header routing | Yes — all products |
-| ECS Cluster | Fargate task host | Yes — all products |
-| Route53 Hosted Zone | DNS management | Yes — all products |
-| ACM Wildcard Certificate | TLS termination | Yes — all products |
-| DynamoDB table (api-keys) | Cross-service API key auth | Yes — all products |
-| Aurora PostgreSQL Serverless v2 | Primary database | Shared or per-product |
-| Secrets Manager (db credentials) | Database connection secrets | Per Aurora cluster |
-| CloudWatch Log Group | Centralized logging | Per product |
+| Resource | Purpose | Cost |
+|----------|---------|------|
+| DynamoDB table (api-keys) | Cross-service API key auth | ~$0.10/mo |
+| S3 bucket (db-snapshots) | SQLite databases + snapshots | ~$0.01/mo |
+| Secrets Manager (OAuth) | Google OAuth credentials (placeholder) | ~$0.40/mo |
+
+**Full stack resources** (no `dev_mode` flag):
+
+| Resource | Purpose | Cost |
+|----------|---------|------|
+| All dev mode resources | (same) | ~$0.50/mo |
+| VPC (2 AZs, public + private subnets) | Networking foundation | included |
+| NAT Gateway | Private subnet internet access | ~$32/mo |
+| Application Load Balancer | HTTPS ingress, host-header routing | ~$16/mo |
+| ECS Cluster | Fargate task host | ~$1/mo |
+| Aurora PostgreSQL Serverless v2 | Primary database | ~$22/mo |
+| Route53 Hosted Zone | DNS management | $0.50/mo |
+| ACM Wildcard Certificate | TLS termination | free |
+| Secrets Manager (db credentials) | Database connection secrets | ~$0.40/mo |
 
 **CloudFormation Exports** (consumed by product stacks):
 
@@ -276,36 +340,43 @@ tokenburner-api-keys-table-name
 
 ### Product Stack (one per product)
 
-Each product is an independent CDK stack that imports base resources.
+Each product is an independent CDK stack. In dev mode, it deploys as Lambda + CloudFront. In full stack mode, it deploys as Fargate + ALB.
 
 ```
 my-product/
 ├── app/
 │   ├── main.py             # Flask application
-│   ├── db.py               # Database connection pool
+│   ├── db.py               # Database layer (Postgres or SQLite-on-S3)
+│   ├── auth.py             # API key + Google OAuth auth
 │   └── migrate.py          # Migration runner
 ├── migrations/
-│   └── 001_initial.sql     # Schema
+│   ├── 001_initial.sql     # Schema
+│   └── 002_seed_data.sql   # Demo data
 ├── static/
-│   └── index.html          # Frontend
+│   └── index.html          # Frontend (mock login + dashboard)
 ├── cdk/
-│   ├── app.py              # CDK app entry point
-│   ├── stack.py            # Product stack definition
+│   ├── app.py              # CDK app entry point (chooses dev or full stack)
+│   ├── stack.py            # DevProductStack + ProductStack
 │   ├── cdk.json            # CDK config
 │   └── requirements.txt    # CDK dependencies
-├── Dockerfile              # Container image
+├── lambda_handler.py       # Lambda entry point (apig-wsgi)
+├── Dockerfile              # Container image (for full stack)
 ├── requirements.txt        # Python dependencies
 └── tokenburner.md          # Product context file
 ```
 
-**A product stack creates:**
+**Dev mode** (`-c dev_mode=true`): ~$0/mo (Lambda free tier)
+- Lambda function (Flask app via apig-wsgi adapter)
+- Lambda function URL (HTTPS endpoint)
+- CloudFront distribution (CDN + nice URL)
+- Uses SQLite-on-S3 from base stack's snapshots bucket
+- Uses DynamoDB API keys from base stack
+
+**Full stack mode**: ~$8/mo per product
 - ECS Fargate service (task definition, security group, ALB target group)
 - ALB listener rule (host-header routing: `product.your-domain.com`)
 - Route53 A record (alias to ALB)
-- Database schema (via migration runner on startup)
-- S3 bucket (if product needs file storage)
-- DynamoDB table (if product needs key-value storage)
-- Lambda functions (if product needs background jobs)
+- Uses Aurora PostgreSQL from base stack
 - CloudWatch log group
 
 ## Product Patterns
@@ -376,7 +447,57 @@ Trigger (API GW / S3 / Schedule) → Lambda → Aurora (via RDS Proxy)
 
 ## Database
 
-PostgreSQL everywhere.
+PostgreSQL everywhere — but you don't need a Postgres server to start building.
+
+### Dev Mode: SQLite-on-S3 (Zero Cost)
+
+The product template's `db.py` supports two backends with the same API:
+
+| Mode | Set | Cost | Use For |
+|------|-----|------|---------|
+| **SQLite-on-S3** | `S3_DB_BUCKET` | ~$0/mo | Building APIs, schema iteration, demos |
+| **Postgres** | `DATABASE_URL` | $0-22/mo | Staging, production, complex queries |
+
+**How it works**: Your database is a SQLite file stored in S3. Every write uploads the updated file. Every cold start downloads it. Same `query()`, `execute()`, `transact()` interface — your application code doesn't change.
+
+```bash
+# SQLite-on-S3 mode (zero cost)
+S3_DB_BUCKET=tokenburner-db-snapshots S3_DB_KEY=myproduct/dev.sqlite python -m flask run
+
+# Local Postgres (Docker Compose)
+docker compose up -d   # DATABASE_URL set in docker-compose.yml
+
+# Cloud Postgres (Neon free tier — real Postgres, scales to zero)
+DATABASE_URL=postgresql://user:pass@ep-cool-name.us-west-2.aws.neon.tech/mydb python -m flask run
+
+# Cloud Postgres (Aurora — production)
+# DATABASE_URL from Secrets Manager, set by CDK automatically
+```
+
+**Caveats** (the AI assistant should tell users when they're outgrowing this):
+- Single writer only — not safe for concurrent requests
+- Adds ~200-500ms per write (S3 upload)
+- SQLite doesn't support JSONB operators (`@>`, `?`), Postgres arrays, or some window functions
+- Database file over ~50MB = noticeable latency on every write
+- **When to upgrade**: any of these → switch to Neon (free, real Postgres) or Aurora
+
+The AI assistant has these guardrails in context. It will proactively tell users: "You're outgrowing SQLite-on-S3 — here's how to switch to real Postgres in 60 seconds."
+
+### Database Branching
+
+Save and restore database states like git branches:
+
+```bash
+python db_branch.py save before-migration    # Snapshot current state
+python db_branch.py save feature-x           # Save a feature branch
+python db_branch.py list                     # See all snapshots
+python db_branch.py restore before-migration # Roll back instantly
+python db_branch.py delete old-snapshot      # Clean up
+```
+
+Snapshots are stored in S3 (`tokenburner-db-snapshots` bucket). Works with both SQLite and Postgres (via pg_dump). Switch between database states in seconds — no waiting for restores or reprovisioning.
+
+**Optional upgrade: Neon** — If you want real Postgres for free, [Neon](https://neon.tech) offers a free tier with built-in database branching (a superset of db_branch). Just set `DATABASE_URL` to your Neon connection string. Same migrations, same app code, zero changes.
 
 ### Schema Conventions
 
@@ -520,7 +641,20 @@ Every product auto-generates OpenAPI docs:
 ```bash
 cd base-stack/cdk
 pip install -r requirements.txt
-cdk deploy tokenburner-base
+
+# Dev mode (~$1/mo — DynamoDB + S3 + Secrets Manager only)
+cdk deploy -c dev_mode=true
+
+# Full stack (~$71/mo — VPC, ALB, ECS, Aurora, NAT Gateway)
+cdk deploy
+```
+
+### Create an API Key (after base stack deploy)
+
+```bash
+cd base-stack
+python manage_keys.py create "dev-admin" --permissions read write
+# Save the sk_... key — you'll need it to access your product's API
 ```
 
 ### Deploy a Product
@@ -528,15 +662,91 @@ cdk deploy tokenburner-base
 ```bash
 cd my-product/cdk
 pip install -r requirements.txt
-cdk deploy my-product-stack
+
+# Dev mode ($0/mo — Lambda + CloudFront + SQLite-on-S3)
+cdk deploy -c dev_mode=true -c product_name=my-product
+
+# Full stack (~$8/mo — Fargate + ALB)
+cdk deploy -c product_name=my-product -c subdomain=my-product
 ```
+
+### Post-Deploy: Verify & Present to User
+
+**AI assistant: after deploying the base stack + product, run these verification checks yourself and present the results to the user.** Do not ask the user to run them. The user's first experience should be seeing their working app.
+
+```bash
+# Extract the CloudFront URL and API key from deploy outputs
+# Then run all 6 checks:
+
+# 1. Health check
+curl -s https://<cloudfront-domain>/health
+
+# 2. Users API (authenticated)
+curl -s https://<cloudfront-domain>/api/users -H "Authorization: Bearer <api-key>"
+
+# 3. Accounts API (authenticated)
+curl -s https://<cloudfront-domain>/api/accounts -H "Authorization: Bearer <api-key>"
+
+# 4. Roles API (authenticated)
+curl -s https://<cloudfront-domain>/api/roles -H "Authorization: Bearer <api-key>"
+
+# 5. Auth enforcement (unauthenticated — should return 401)
+curl -s -o /dev/null -w "%{http_code}" https://<cloudfront-domain>/api/users
+
+# 6. Frontend loads (mock login SPA)
+curl -s https://<cloudfront-domain>/ | head -3
+```
+
+**Then present everything to the user like this:**
+
+---
+
+Your app is live. Here's everything you need:
+
+**App URL:** `https://<cloudfront-domain>`
+**API Key:** `<api-key>`
+
+Open the URL in your browser, paste the API key, and you'll see the mock login with 3 demo users.
+
+| Step | Time |
+|------|------|
+| Base stack deploy (dev mode) | ~1 min |
+| Create API key | < 1 min |
+| Product deploy (Lambda + CloudFront) | ~5 min |
+| **Total** | **~7 min** |
+
+**Verification (all 6 checks pass):**
+- `/health` → `{"db_mode":"sqlite","status":"ok"}`
+- `/api/users` → 3 seed users (admin, editor, viewer)
+- `/api/accounts` → 1 demo account
+- `/api/roles` → 3 roles with permissions
+- Unauthenticated request → 401 (auth enforced)
+- `/` → Mock login SPA loads
+
+**Monthly cost:** ~$1/mo (DynamoDB + S3 + Secrets Manager). Lambda and CloudFront are free tier.
+
+---
+
+This is the user's first "wow" moment. Make it count — show them a working product, not a wall of terminal output.
 
 ### Tear Down a Product (without affecting others)
 
 ```bash
 cd my-product/cdk
-cdk destroy my-product-stack
+cdk destroy -c dev_mode=true -c product_name=my-product
 ```
+
+### Optional: Run Locally
+
+You can also run the product locally with Docker Compose (uses Postgres):
+
+```bash
+cd my-product
+docker compose up -d
+# Visit http://localhost:8080
+```
+
+The same Flask app works in both environments. The `db.py` layer auto-detects whether to use Postgres (local/production) or SQLite-on-S3 (Lambda dev mode).
 
 ### Deploy a Website
 
@@ -597,8 +807,8 @@ Products use environment variables for configuration. In cloud, these come from 
 stack/
 ├── base-stack/
 │   ├── cdk/
-│   │   ├── app.py           # CDK app entry
-│   │   ├── stack.py         # Base stack (VPC, ALB, ECS, Aurora, Route53, DynamoDB, OAuth)
+│   │   ├── app.py           # CDK app entry (reads dev_mode context)
+│   │   ├── stack.py         # Base stack (dev: DynamoDB+S3+Secrets, full: +VPC+ALB+ECS+Aurora)
 │   │   ├── cdk.json
 │   │   └── requirements.txt
 │   └── manage_keys.py       # API key management CLI (create, list, revoke, inspect)
@@ -606,21 +816,23 @@ stack/
 │   ├── app/
 │   │   ├── main.py          # Flask app with Swagger docs (/docs, /openapi.json)
 │   │   ├── auth.py          # Dual auth: API keys (DynamoDB) + Google OAuth
-│   │   ├── db.py            # Database connection pool
-│   │   └── migrate.py       # Migration runner
+│   │   ├── db.py            # Dual-mode database (Postgres or SQLite-on-S3)
+│   │   └── migrate.py       # Migration runner (works with both modes)
 │   ├── migrations/
-│   │   └── 001_initial.sql  # Baseline migration
+│   │   ├── 001_initial.sql  # Schema (accounts, users, roles, emails)
+│   │   └── 002_seed_data.sql # Demo data (3 users, 3 roles, 1 account)
 │   ├── static/
-│   │   └── index.html       # Starter frontend
+│   │   └── index.html       # Mock login SPA (API key → user picker → dashboard)
 │   ├── cdk/
-│   │   ├── app.py           # Product CDK app entry
-│   │   ├── stack.py         # Product stack (Fargate, ALB rule, DNS, auth grants)
+│   │   ├── app.py           # Product CDK app (chooses DevProductStack or ProductStack)
+│   │   ├── stack.py         # Dev: Lambda+CloudFront, Full: Fargate+ALB
 │   │   ├── cdk.json
 │   │   └── requirements.txt
-│   ├── Dockerfile
-│   ├── docker-compose.yml   # Local development
-│   ├── requirements.txt     # Flask, flasgger, psycopg2, boto3
-│   └── tokenburner.md       # Context file template
+│   ├── lambda_handler.py    # Lambda entry point (apig-wsgi adapter for Flask)
+│   ├── db_branch.py         # Database branching CLI (save/restore snapshots)
+│   ├── Dockerfile           # Container image (for full stack mode)
+│   ├── docker-compose.yml   # Local development (optional)
+│   ├── requirements.txt     # Flask, flasgger, psycopg2, boto3, apig-wsgi
 ├── website/
 │   ├── static/
 │   │   ├── index.html       # Landing page (flame particles, dark theme)
@@ -661,17 +873,26 @@ You handle:
 
 ## What's Built
 
-- [ ] This context file (tokenburner.md)
-- [ ] Base stack CDK (VPC, ALB, ECS, Aurora, Route53, DynamoDB, Secrets Manager)
-- [ ] Product template (Flask app, migrations, Dockerfile, CDK stack)
-- [ ] Static SPA pattern
-- [ ] AI chat pattern
-- [ ] Background job pattern
+- [x] This context file (tokenburner.md)
+- [x] Base stack CDK with dev_mode flag (dev: DynamoDB+S3+Secrets, full: +VPC+ALB+ECS+Aurora)
+- [x] Product template with dual deployment (dev: Lambda+CloudFront, full: Fargate+ALB)
+- [x] Dual-mode database (Postgres or SQLite-on-S3) with auto SQL translation
+- [x] Database branching CLI (save/restore snapshots to S3)
+- [x] API key management CLI (create, list, revoke, inspect)
+- [x] Dual auth (DynamoDB API keys + Google OAuth)
+- [x] Seed schema (accounts, users, roles, emails) with CRUD API
+- [x] Mock login SPA (API key → user picker → dashboard)
+- [x] Swagger/OpenAPI docs on every product (/docs)
+- [x] Static SPA pattern (S3 + CloudFront)
+- [x] AI chat pattern (Bedrock + SSE)
+- [x] Background job pattern (Lambda)
+- [x] Website template (flame particle landing page)
 
 ## What's Not Built Yet
 
+- [ ] Auto-generate API key during base stack deploy
 - [ ] CI/CD pipeline template (GitHub Actions)
 - [ ] Monitoring / alerting templates (CloudWatch dashboards)
-- [ ] Cost optimization guide (when and how to go local)
 - [ ] Multi-region deployment
 - [ ] Custom domain setup automation
+- [ ] The storage product itself

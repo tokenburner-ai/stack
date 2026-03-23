@@ -7,48 +7,363 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #111;
-            color: #f7f7f7;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, sans-serif;
+            background: #050508;
+            color: #f0f0f0;
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        .page { max-width: 900px; margin: 0 auto; padding: 2rem; }
+
+        /* ─── Auth Screen ─── */
+        .auth-screen {
+            display: flex; align-items: center; justify-content: center;
             min-height: 100vh;
         }
-        .container {
-            text-align: center;
-            max-width: 600px;
-            padding: 2rem;
+        .auth-box {
+            background: #0d0d12; border: 1px solid #1a1a24; border-radius: 12px;
+            padding: 2.5rem; width: 100%; max-width: 420px; text-align: center;
         }
-        h1 { font-size: 2rem; margin-bottom: 0.5rem; }
-        p { color: #999; font-size: 1.1rem; }
-        .status {
-            margin-top: 2rem;
-            padding: 1rem;
-            background: #1a1a1a;
-            border-radius: 8px;
-            font-family: monospace;
-            color: #4ade80;
+        .auth-box h1 {
+            font-size: 1.8rem; font-weight: 800; margin-bottom: 0.25rem;
+            background: linear-gradient(135deg, #fff, #f97316, #3b82f6);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         }
+        .auth-box .subtitle { color: #777; font-size: 0.9rem; margin-bottom: 2rem; }
+        .auth-box label { display: block; text-align: left; color: #999; font-size: 0.8rem; margin-bottom: 0.3rem; }
+        .auth-box input {
+            width: 100%; padding: 0.65rem 0.75rem; margin-bottom: 1rem;
+            background: #111118; border: 1px solid #2a2a34; border-radius: 6px;
+            color: #f0f0f0; font-family: monospace; font-size: 0.85rem;
+        }
+        .auth-box input:focus { outline: none; border-color: #f97316; }
+        .auth-box .error { color: #ef4444; font-size: 0.85rem; margin-bottom: 1rem; display: none; }
+        .btn {
+            display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px;
+            font-size: 0.9rem; font-weight: 500; cursor: pointer; border: none;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: #f97316; color: white; box-shadow: 0 0 20px rgba(249,115,22,0.25);
+        }
+        .btn-primary:hover { background: #ea580c; }
+        .btn-primary:disabled { opacity: 0.5; cursor: wait; }
+
+        /* ─── User Picker ─── */
+        .user-picker { display: none; margin-top: 1.5rem; }
+        .user-picker h3 { font-size: 0.9rem; color: #999; margin-bottom: 0.75rem; }
+        .user-card {
+            display: flex; align-items: center; gap: 0.75rem;
+            padding: 0.75rem 1rem; margin-bottom: 0.5rem;
+            background: #111118; border: 1px solid #2a2a34; border-radius: 8px;
+            cursor: pointer; transition: all 0.15s;
+        }
+        .user-card:hover { border-color: #f97316; background: #161620; }
+        .user-avatar {
+            width: 36px; height: 36px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 0.85rem; color: white;
+        }
+        .user-avatar.admin { background: #f97316; }
+        .user-avatar.editor { background: #3b82f6; }
+        .user-avatar.viewer { background: #8b5cf6; }
+        .user-info { text-align: left; }
+        .user-info .name { font-weight: 600; font-size: 0.9rem; }
+        .user-info .meta { color: #777; font-size: 0.75rem; }
+        .role-badge {
+            margin-left: auto; font-size: 0.7rem; padding: 0.2rem 0.5rem;
+            border-radius: 4px; text-transform: uppercase; font-weight: 600;
+        }
+        .role-badge.admin { background: rgba(249,115,22,0.15); color: #f97316; }
+        .role-badge.editor { background: rgba(59,130,246,0.15); color: #3b82f6; }
+        .role-badge.viewer { background: rgba(139,92,246,0.15); color: #8b5cf6; }
+
+        /* ─── Dashboard ─── */
+        .dashboard { display: none; }
+        .dash-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 1rem 0; border-bottom: 1px solid #1a1a24; margin-bottom: 1.5rem;
+        }
+        .dash-header .brand { font-weight: 700; font-size: 1.1rem; }
+        .dash-header .user-badge {
+            display: flex; align-items: center; gap: 0.5rem;
+            font-size: 0.85rem; color: #999;
+        }
+        .dash-header .user-badge .dot {
+            width: 8px; height: 8px; border-radius: 50%; background: #4ade80;
+        }
+        .btn-sm {
+            padding: 0.3rem 0.75rem; font-size: 0.8rem; border-radius: 4px;
+            background: #1a1a24; color: #999; border: 1px solid #2a2a34; cursor: pointer;
+        }
+        .btn-sm:hover { color: #f0f0f0; border-color: #444; }
+        .section-title {
+            font-size: 0.8rem; color: #666; text-transform: uppercase;
+            letter-spacing: 0.05em; margin-bottom: 0.75rem; margin-top: 1.5rem;
+        }
+        .data-table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
+        .data-table th {
+            text-align: left; font-size: 0.75rem; color: #666; text-transform: uppercase;
+            padding: 0.5rem 0.75rem; border-bottom: 1px solid #1a1a24;
+        }
+        .data-table td {
+            padding: 0.6rem 0.75rem; border-bottom: 1px solid #111118; font-size: 0.85rem;
+        }
+        .data-table tr:hover td { background: #0d0d12; }
+        .badge {
+            display: inline-block; font-size: 0.7rem; padding: 0.15rem 0.4rem;
+            border-radius: 3px; font-weight: 600;
+        }
+        .badge-green { background: rgba(74,222,128,0.15); color: #4ade80; }
+        .badge-yellow { background: rgba(250,204,21,0.15); color: #facc15; }
+        .badge-red { background: rgba(239,68,68,0.15); color: #ef4444; }
+        .db-mode {
+            display: inline-block; font-size: 0.7rem; padding: 0.2rem 0.5rem;
+            border-radius: 4px; background: rgba(249,115,22,0.1); color: #f97316;
+        }
+        .stats { display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+        .stat-card {
+            flex: 1; min-width: 120px; background: #0d0d12; border: 1px solid #1a1a24;
+            border-radius: 8px; padding: 1rem; text-align: center;
+        }
+        .stat-card .value { font-size: 1.8rem; font-weight: 700; }
+        .stat-card .label { font-size: 0.75rem; color: #777; }
+        .footer {
+            text-align: center; padding: 2rem 0; color: #444; font-size: 0.8rem;
+            border-top: 1px solid #1a1a24; margin-top: 2rem;
+        }
+        .footer a { color: #f97316; text-decoration: none; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Your Product Name</h1>
-        <p>Built on the tokenburner stack.</p>
-        <div class="status" id="status">Checking health...</div>
+
+<!-- ─── Auth Screen ─── -->
+<div class="auth-screen" id="authScreen">
+    <div class="auth-box">
+        <h1>Tokenburner</h1>
+        <div class="subtitle">Enter your API key to continue</div>
+
+        <div id="keyEntry">
+            <label>API Key</label>
+            <input type="text" id="apiKeyInput" placeholder="sk_..." autocomplete="off" spellcheck="false">
+            <div class="error" id="authError"></div>
+            <button class="btn btn-primary" id="connectBtn" onclick="connectKey()">Connect</button>
+        </div>
+
+        <div class="user-picker" id="userPicker">
+            <h3>Sign in as</h3>
+            <div id="userList"></div>
+        </div>
     </div>
-    <script>
-        fetch('/health')
-            .then(r => r.json())
-            .then(d => {
-                document.getElementById('status').textContent =
-                    d.status === 'ok' ? 'Stack is live. Start building.' : 'Error: ' + d.detail;
-            })
-            .catch(() => {
-                document.getElementById('status').textContent = 'Could not reach backend.';
-                document.getElementById('status').style.color = '#ef4444';
-            });
-    </script>
+</div>
+
+<!-- ─── Dashboard ─── -->
+<div class="page dashboard" id="dashboard">
+    <div class="dash-header">
+        <div class="brand">Tokenburner <span class="db-mode" id="dbMode"></span></div>
+        <div class="user-badge">
+            <span class="dot"></span>
+            <span id="currentUser"></span>
+            <button class="btn-sm" onclick="window.location='/api-docs'" style="background:#1a3a1a;color:#4ade80;border-color:#2a4a2a">API Docs</button>
+            <button class="btn-sm" onclick="signOut()">Sign Out</button>
+        </div>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="section-title">Accounts</div>
+    <table class="data-table" id="accountsTable">
+        <thead><tr><th>ID</th><th>Name</th><th>Slug</th><th>Plan</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+    </table>
+
+    <div class="section-title">Users</div>
+    <table class="data-table" id="usersTable">
+        <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Account</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+    </table>
+
+    <div class="section-title">Roles</div>
+    <table class="data-table" id="rolesTable">
+        <thead><tr><th>ID</th><th>Name</th><th>Description</th><th>Permissions</th></tr></thead>
+        <tbody></tbody>
+    </table>
+
+    <div class="footer">
+        &#x1F525; Brought to you by <a href="https://github.com/tokenburner-ai">tokenburner</a>
+    </div>
+</div>
+
+<script>
+let API_KEY = localStorage.getItem('tb_api_key') || '';
+let CURRENT_USER = null;
+
+// ─── API Helper ───
+async function api(path, opts = {}) {
+    const res = await fetch(path, {
+        ...opts,
+        headers: {
+            'Authorization': `Bearer ${API_KEY}`,
+            'Content-Type': 'application/json',
+            ...(opts.headers || {}),
+        },
+    });
+    if (res.status === 401) throw new Error('Invalid API key');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+}
+
+// ─── Auth Flow ───
+async function connectKey() {
+    const input = document.getElementById('apiKeyInput');
+    const err = document.getElementById('authError');
+    const btn = document.getElementById('connectBtn');
+    API_KEY = input.value.trim();
+
+    if (!API_KEY.startsWith('sk_')) {
+        err.textContent = 'API key must start with sk_';
+        err.style.display = 'block';
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Connecting...';
+    err.style.display = 'none';
+
+    try {
+        const users = await api('/api/users');
+        localStorage.setItem('tb_api_key', API_KEY);
+        showUserPicker(users);
+    } catch (e) {
+        err.textContent = e.message === 'Invalid API key'
+            ? 'Invalid API key. Check your key and try again.'
+            : 'Connection failed: ' + e.message;
+        err.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Connect';
+    }
+}
+
+function showUserPicker(users) {
+    document.getElementById('keyEntry').style.display = 'none';
+    const picker = document.getElementById('userPicker');
+    picker.style.display = 'block';
+
+    const list = document.getElementById('userList');
+    list.innerHTML = '';
+
+    users.forEach(u => {
+        const role = (u.role_name || 'user').toLowerCase();
+        const initials = u.name.split(' ').map(w => w[0]).join('').slice(0, 2);
+        const card = document.createElement('div');
+        card.className = 'user-card';
+        card.onclick = () => signIn(u);
+        card.innerHTML = `
+            <div class="user-avatar ${role}">${initials}</div>
+            <div class="user-info">
+                <div class="name">${u.name}</div>
+                <div class="meta">${u.email}</div>
+            </div>
+            <span class="role-badge ${role}">${u.role_name || 'user'}</span>
+        `;
+        list.appendChild(card);
+    });
+}
+
+function signIn(user) {
+    CURRENT_USER = user;
+    localStorage.setItem('tb_user', JSON.stringify(user));
+    showDashboard();
+}
+
+function signOut() {
+    CURRENT_USER = null;
+    localStorage.removeItem('tb_user');
+    localStorage.removeItem('tb_api_key');
+    API_KEY = '';
+    document.getElementById('authScreen').style.display = 'flex';
+    document.getElementById('dashboard').style.display = 'none';
+    document.getElementById('keyEntry').style.display = 'block';
+    document.getElementById('userPicker').style.display = 'none';
+    document.getElementById('apiKeyInput').value = '';
+}
+
+// ─── Dashboard ───
+async function showDashboard() {
+    document.getElementById('authScreen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('currentUser').textContent = CURRENT_USER.name;
+
+    try {
+        const [health, accounts, users, roles] = await Promise.all([
+            api('/health'),
+            api('/api/accounts'),
+            api('/api/users'),
+            api('/api/roles'),
+        ]);
+
+        // DB mode badge
+        document.getElementById('dbMode').textContent = health.db_mode || 'unknown';
+
+        // Stats
+        document.getElementById('stats').innerHTML = `
+            <div class="stat-card"><div class="value">${accounts.length}</div><div class="label">Accounts</div></div>
+            <div class="stat-card"><div class="value">${users.length}</div><div class="label">Users</div></div>
+            <div class="stat-card"><div class="value">${roles.length}</div><div class="label">Roles</div></div>
+            <div class="stat-card"><div class="value" style="color:#4ade80">&#x2713;</div><div class="label">API Connected</div></div>
+        `;
+
+        // Accounts table
+        const atb = document.querySelector('#accountsTable tbody');
+        atb.innerHTML = accounts.map(a => `<tr>
+            <td>${a.id}</td><td>${a.name}</td><td><code>${a.slug}</code></td>
+            <td>${a.plan}</td>
+            <td>${a.active ? '<span class="badge badge-green">active</span>' : '<span class="badge badge-red">inactive</span>'}</td>
+        </tr>`).join('');
+
+        // Users table
+        const utb = document.querySelector('#usersTable tbody');
+        utb.innerHTML = users.map(u => `<tr>
+            <td>${u.id}</td><td>${u.name}</td><td>${u.email}</td>
+            <td><span class="role-badge ${(u.role_name||'').toLowerCase()}">${u.role_name || '—'}</span></td>
+            <td>${u.account_name}</td>
+            <td>${u.active ? '<span class="badge badge-green">active</span>' : '<span class="badge badge-red">inactive</span>'}</td>
+        </tr>`).join('');
+
+        // Roles table
+        const rtb = document.querySelector('#rolesTable tbody');
+        rtb.innerHTML = roles.map(r => `<tr>
+            <td>${r.id}</td><td>${r.name}</td><td>${r.description || '—'}</td>
+            <td>${(r.permissions || '').split(',').map(p => `<span class="badge badge-yellow">${p.trim()}</span>`).join(' ')}</td>
+        </tr>`).join('');
+
+    } catch (e) {
+        document.getElementById('stats').innerHTML =
+            `<div class="stat-card" style="flex:1"><div class="value" style="color:#ef4444">!</div><div class="label">${e.message}</div></div>`;
+    }
+}
+
+// ─── Auto-resume session ───
+(async function init() {
+    const savedUser = localStorage.getItem('tb_user');
+    const savedKey = localStorage.getItem('tb_api_key');
+    if (savedKey && savedUser) {
+        API_KEY = savedKey;
+        try {
+            CURRENT_USER = JSON.parse(savedUser);
+            await api('/health'); // verify key still works
+            showDashboard();
+        } catch {
+            signOut();
+        }
+    }
+
+    // Enter key submits
+    document.getElementById('apiKeyInput').addEventListener('keydown', e => {
+        if (e.key === 'Enter') connectKey();
+    });
+})();
+</script>
 </body>
 </html>

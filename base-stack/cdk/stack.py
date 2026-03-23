@@ -1,4 +1,9 @@
-"""Tokenburner Base Stack — VPC, ALB, ECS, Aurora, Route53, DynamoDB, Secrets."""
+"""Tokenburner Base Stack — shared infrastructure for all products.
+
+Two modes:
+  dev_mode=True:  DynamoDB + S3 + Secrets Manager only (~$1/mo)
+  dev_mode=False: Full stack — VPC, ALB, ECS, Aurora, NAT Gateway (~$71/mo)
+"""
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -10,6 +15,7 @@ from aws_cdk import (
     aws_certificatemanager as acm,
     aws_dynamodb as dynamodb,
     aws_secretsmanager as secretsmanager,
+    aws_s3 as s3,
     aws_logs as logs,
 )
 from constructs import Construct
@@ -21,6 +27,7 @@ class TokenburnerBaseStack(cdk.Stack):
         scope: Construct,
         construct_id: str,
         *,
+        dev_mode: bool = False,
         domain_name: str | None = None,
         hosted_zone_id: str | None = None,
         existing_vpc_id: str | None = None,
@@ -31,12 +38,86 @@ class TokenburnerBaseStack(cdk.Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
+        self.dev_mode = dev_mode
+
         # ──────────────────────────────────────────────
         # Tags — applied to ALL resources in this stack
         # ──────────────────────────────────────────────
         cdk.Tags.of(self).add("ManagedBy", "tokenburner")
         cdk.Tags.of(self).add("tokenburner:stack", "base")
-        cdk.Tags.of(self).add("tokenburner:component", "infrastructure")
+        cdk.Tags.of(self).add("tokenburner:mode", "dev" if dev_mode else "full")
+
+        # ──────────────────────────────────────────────
+        # DynamoDB — API Keys table (both modes)
+        # ──────────────────────────────────────────────
+        self.api_keys_table = dynamodb.Table(
+            self,
+            "ApiKeys",
+            table_name="tokenburner-api-keys",
+            partition_key=dynamodb.Attribute(
+                name="key_id",
+                type=dynamodb.AttributeType.STRING,
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True,
+            ),
+            stream=dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+        )
+        self.api_keys_table.add_global_secondary_index(
+            index_name="name-index",
+            partition_key=dynamodb.Attribute(
+                name="name",
+                type=dynamodb.AttributeType.STRING,
+            ),
+        )
+
+        # ──────────────────────────────────────────────
+        # S3 — Database snapshots bucket (both modes)
+        # ──────────────────────────────────────────────
+        self.db_snapshots_bucket = s3.Bucket(
+            self,
+            "DbSnapshots",
+            bucket_name=f"tokenburner-db-snapshots-{cdk.Aws.ACCOUNT_ID}",
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+            auto_delete_objects=True,
+            versioned=True,
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    noncurrent_version_expiration=cdk.Duration.days(30),
+                ),
+            ],
+        )
+
+        # ──────────────────────────────────────────────
+        # Google OAuth Secrets (both modes)
+        # ──────────────────────────────────────────────
+        self.oauth_secret = secretsmanager.Secret(
+            self,
+            "OAuthSecret",
+            secret_name="tokenburner/google-oauth",
+            description="Google OAuth client credentials for tokenburner products",
+        )
+
+        # ──────────────────────────────────────────────
+        # Exports (both modes)
+        # ──────────────────────────────────────────────
+        self._export("api-keys-table-name", self.api_keys_table.table_name)
+        self._export("api-keys-table-arn", self.api_keys_table.table_arn)
+        self._export("oauth-secret-arn", self.oauth_secret.secret_arn)
+        self._export("db-snapshots-bucket", self.db_snapshots_bucket.bucket_name)
+        self._export("mode", "dev" if dev_mode else "full")
+
+        # ──────────────────────────────────────────────
+        # Dev mode stops here — no VPC, ALB, ECS, Aurora
+        # ──────────────────────────────────────────────
+        if dev_mode:
+            return
+
+        # ══════════════════════════════════════════════
+        # FULL STACK — everything below is production
+        # ══════════════════════════════════════════════
 
         # ──────────────────────────────────────────────
         # VPC
@@ -101,11 +182,9 @@ class TokenburnerBaseStack(cdk.Stack):
                 self,
                 "Alb",
                 load_balancer_arn=existing_alb_arn,
-                security_group_id="",  # looked up below
+                security_group_id="",
                 vpc=self.vpc,
             )
-            # When importing an existing ALB, the HTTPS listener must also be imported.
-            # Product stacks will need the listener ARN passed via context.
             self.https_listener = None
         else:
             self.alb = elbv2.ApplicationLoadBalancer(
@@ -116,10 +195,8 @@ class TokenburnerBaseStack(cdk.Stack):
                 internet_facing=True,
             )
 
-            # Redirect HTTP → HTTPS (only if we have a cert)
-            self.alb.add_redirect(source_port=80, target_port=443)
-
             if self.certificate:
+                self.alb.add_redirect(source_port=80, target_port=443)
                 self.https_listener = self.alb.add_listener(
                     "HttpsListener",
                     port=443,
@@ -131,14 +208,33 @@ class TokenburnerBaseStack(cdk.Stack):
                     ),
                 )
             else:
-                # No domain/cert — use HTTP listener on port 80
                 self.https_listener = self.alb.add_listener(
                     "HttpListener",
                     port=80,
                     default_action=elbv2.ListenerAction.fixed_response(
-                        status_code=404,
-                        content_type="text/plain",
-                        message_body="Not found",
+                        status_code=200,
+                        content_type="text/html",
+                        message_body=(
+                            "<!DOCTYPE html><html><head><meta charset=utf-8>"
+                            "<title>tokenburner</title>"
+                            "<style>*{margin:0;padding:0;box-sizing:border-box}"
+                            "body{background:#050508;color:#f0f0f0;font-family:system-ui,sans-serif;"
+                            "display:flex;align-items:center;justify-content:center;min-height:100vh;"
+                            "text-align:center}"
+                            "h1{font-size:2.5rem;font-weight:800;"
+                            "background:linear-gradient(135deg,#fff,#f97316,#3b82f6);"
+                            "-webkit-background-clip:text;-webkit-text-fill-color:transparent}"
+                            "p{color:#777;margin-top:1rem;font-size:1.1rem}"
+                            "a{color:#f97316;text-decoration:none}"
+                            ".f{font-size:2rem;margin-bottom:1rem}"
+                            "</style></head><body><div>"
+                            "<div class=f>&#x1F525;</div>"
+                            "<h1>Burned a few to build this</h1>"
+                            "<p>tokenburner base stack is live.</p>"
+                            "<p style='margin-top:2rem;font-size:.85rem'>"
+                            "Brought to you by <a href='https://github.com/tokenburner-ai'>tokenburner</a>"
+                            "</p></div></body></html>"
+                        ),
                     ),
                 )
 
@@ -188,7 +284,6 @@ class TokenburnerBaseStack(cdk.Stack):
                 description="Aurora PostgreSQL access",
                 allow_all_outbound=False,
             )
-            # Allow inbound from any private subnet
             self.db_security_group.add_ingress_rule(
                 ec2.Peer.ipv4(self.vpc.vpc_cidr_block),
                 ec2.Port.tcp(5432),
@@ -217,58 +312,7 @@ class TokenburnerBaseStack(cdk.Stack):
             )
 
         # ──────────────────────────────────────────────
-        # DynamoDB — API Keys table
-        #
-        # Schema:
-        #   key_id (PK): "sk_<32 hex chars>" — generated via secrets.token_hex(16)
-        #   name (GSI): human-readable key name for lookup
-        #   active: bool — key enabled/disabled
-        #   permissions: list — ["read"] or ["read", "write"]
-        #   environments: list — ["dev", "prd"] or ["*"] for all
-        #   email: str (optional) — owner's email
-        #   description: str (optional) — key purpose
-        #   created_at: str — ISO 8601 timestamp
-        #   created_by: str — creator identity
-        #   last_used_at: str — updated on each auth
-        #   expires_at: str (optional) — expiration timestamp
-        # ──────────────────────────────────────────────
-        self.api_keys_table = dynamodb.Table(
-            self,
-            "ApiKeys",
-            table_name="tokenburner-api-keys",
-            partition_key=dynamodb.Attribute(
-                name="key_id",
-                type=dynamodb.AttributeType.STRING,
-            ),
-            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            point_in_time_recovery=True,
-            stream=dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
-            removal_policy=cdk.RemovalPolicy.RETAIN,
-        )
-
-        # GSI for looking up keys by human-readable name
-        self.api_keys_table.add_global_secondary_index(
-            index_name="name-index",
-            partition_key=dynamodb.Attribute(
-                name="name",
-                type=dynamodb.AttributeType.STRING,
-            ),
-        )
-
-        # ──────────────────────────────────────────────
-        # Google OAuth Secrets
-        # Store Google OAuth client ID and secret for
-        # human user authentication across all products.
-        # ──────────────────────────────────────────────
-        self.oauth_secret = secretsmanager.Secret(
-            self,
-            "OAuthSecret",
-            secret_name="tokenburner/google-oauth",
-            description="Google OAuth client credentials for tokenburner products",
-        )
-
-        # ──────────────────────────────────────────────
-        # CloudFormation Exports
+        # Full-stack CloudFormation Exports
         # ──────────────────────────────────────────────
         self._export("vpc-id", self.vpc.vpc_id)
         self._export(
@@ -305,10 +349,6 @@ class TokenburnerBaseStack(cdk.Stack):
             self._export("db-cluster-port", str(self.db_cluster.cluster_endpoint.port))
         if self.db_secret:
             self._export("db-secret-arn", self.db_secret.secret_arn)
-
-        self._export("api-keys-table-name", self.api_keys_table.table_name)
-        self._export("api-keys-table-arn", self.api_keys_table.table_arn)
-        self._export("oauth-secret-arn", self.oauth_secret.secret_arn)
 
     def _export(self, name: str, value: str) -> None:
         """Create a CfnOutput with a standardized export name."""

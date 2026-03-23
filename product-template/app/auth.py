@@ -4,7 +4,7 @@ Two auth paths:
 1. API Keys (programmatic): Authorization: Bearer sk_... or X-API-Key: sk_...
 2. Google OAuth (human users): Browser-based sign-in flow
 
-API keys are validated against the shared DynamoDB table.
+API keys are validated against the shared DynamoDB table (tokenburner-api-keys).
 Google OAuth uses credentials from Secrets Manager.
 """
 
@@ -15,8 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import wraps
 
-import boto3
-from flask import request, jsonify, session, redirect, url_for
+from flask import request, jsonify, session, redirect
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +52,7 @@ class Identity:
 def _get_api_keys_table():
     global _dynamodb
     if _dynamodb is None:
+        import boto3
         _dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
     return _dynamodb.Table(API_KEYS_TABLE)
 
@@ -107,17 +107,14 @@ def validate_api_key(key: str) -> Identity | None:
 
 def _extract_api_key() -> str | None:
     """Extract API key from request headers or query params."""
-    # Authorization: Bearer sk_...
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer sk_"):
         return auth[7:]
 
-    # X-API-Key: sk_...
     api_key = request.headers.get("X-API-Key", "")
     if api_key.startswith("sk_"):
         return api_key
 
-    # Query param: ?key=sk_...
     key = request.args.get("key", "")
     if key.startswith("sk_"):
         return key
@@ -128,7 +125,6 @@ def _extract_api_key() -> str | None:
 # ─── Google OAuth ────────────────────────────────────────
 
 def get_google_auth_url(redirect_uri: str) -> str:
-    """Generate Google OAuth authorization URL."""
     from urllib.parse import urlencode
     params = urlencode({
         "client_id": GOOGLE_CLIENT_ID,
@@ -142,11 +138,9 @@ def get_google_auth_url(redirect_uri: str) -> str:
 
 
 def exchange_google_code(code: str, redirect_uri: str) -> Identity | None:
-    """Exchange authorization code for user identity."""
     import urllib.request
     import urllib.parse
 
-    # Exchange code for tokens
     data = urllib.parse.urlencode({
         "code": code,
         "client_id": GOOGLE_CLIENT_ID,
@@ -164,7 +158,6 @@ def exchange_google_code(code: str, redirect_uri: str) -> Identity | None:
         with urllib.request.urlopen(req) as resp:
             tokens = json.loads(resp.read())
 
-        # Get user info
         req = urllib.request.Request(
             "https://www.googleapis.com/oauth2/v2/userinfo",
             headers={"Authorization": f"Bearer {tokens['access_token']}"},
@@ -188,13 +181,10 @@ def exchange_google_code(code: str, redirect_uri: str) -> Identity | None:
 # ─── Middleware / Decorators ─────────────────────────────
 
 def get_identity() -> Identity | None:
-    """Get the current request's identity from API key or session."""
-    # Try API key first
     api_key = _extract_api_key()
     if api_key:
         return validate_api_key(api_key)
 
-    # Try session (Google OAuth)
     if session.get("user_email"):
         return Identity(
             method="google",
@@ -233,11 +223,9 @@ def require_write(f):
     return decorated
 
 
-# ─── OAuth Routes (register as blueprint or add to app) ──
+# ─── OAuth Routes ──────────────────────────────────────
 
 def register_oauth_routes(app):
-    """Register Google OAuth login/callback/logout routes."""
-
     @app.route("/auth/login")
     def auth_login():
         redirect_uri = request.url_root.rstrip("/") + "/auth/callback"
@@ -248,13 +236,10 @@ def register_oauth_routes(app):
         code = request.args.get("code")
         if not code:
             return jsonify({"error": "Missing authorization code"}), 400
-
         redirect_uri = request.url_root.rstrip("/") + "/auth/callback"
         identity = exchange_google_code(code, redirect_uri)
-
         if not identity:
             return jsonify({"error": "Authentication failed"}), 401
-
         session["user_email"] = identity.email
         session["user_name"] = identity.name
         session["permissions"] = identity.permissions

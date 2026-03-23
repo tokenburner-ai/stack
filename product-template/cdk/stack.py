@@ -1,4 +1,8 @@
-"""Product Stack — Fargate service behind the shared tokenburner ALB."""
+"""Product Stack — two deployment modes.
+
+DevProductStack:  Lambda + CloudFront (~$0/mo, dev mode)
+ProductStack:     Fargate + ALB (production, full stack)
+"""
 
 import os
 import aws_cdk as cdk
@@ -12,9 +16,124 @@ from aws_cdk import (
     aws_logs as logs,
     aws_iam as iam,
     aws_secretsmanager as secretsmanager,
+    aws_lambda as _lambda,
+    aws_cloudfront as cloudfront,
+    aws_cloudfront_origins as origins,
+    aws_s3 as s3,
 )
 from constructs import Construct
 
+PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
+
+
+# ══════════════════════════════════════════════════════
+# Dev Mode: Lambda + CloudFront
+# ══════════════════════════════════════════════════════
+
+class DevProductStack(cdk.Stack):
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        *,
+        product_name: str,
+        **kwargs,
+    ) -> None:
+        super().__init__(scope, construct_id, **kwargs)
+
+        cdk.Tags.of(self).add("ManagedBy", "tokenburner")
+        cdk.Tags.of(self).add("tokenburner:stack", "product")
+        cdk.Tags.of(self).add("tokenburner:product", product_name)
+        cdk.Tags.of(self).add("tokenburner:mode", "dev")
+
+        # Import base stack exports
+        api_keys_table_name = cdk.Fn.import_value("tokenburner-api-keys-table-name")
+        api_keys_table_arn = cdk.Fn.import_value("tokenburner-api-keys-table-arn")
+        db_snapshots_bucket = cdk.Fn.import_value("tokenburner-db-snapshots-bucket")
+
+        # ──────────────────────────────────────────────
+        # Lambda Function (Flask app via mangum)
+        # ──────────────────────────────────────────────
+        fn = _lambda.Function(
+            self,
+            "Handler",
+            function_name=f"tokenburner-{product_name}",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="lambda_handler.handler",
+            code=_lambda.Code.from_asset(
+                path=PROJECT_ROOT,
+                bundling=cdk.BundlingOptions(
+                    image=_lambda.Runtime.PYTHON_3_12.bundling_image,
+                    command=[
+                        "bash", "-c",
+                        "pip install flask apig-wsgi boto3 flasgger -t /asset-output --quiet && "
+                        "cp -r app/* /asset-output/ && "
+                        "cp lambda_handler.py /asset-output/ && "
+                        "cp -r migrations /asset-output/ && "
+                        "cp -r static /asset-output/"
+                    ],
+                ),
+            ),
+            memory_size=512,
+            timeout=cdk.Duration.seconds(30),
+            environment={
+                "PRODUCT_NAME": product_name,
+                "S3_DB_BUCKET": db_snapshots_bucket,
+                "S3_DB_KEY": f"{product_name}/dev.sqlite",
+                "API_KEYS_TABLE": api_keys_table_name,
+            },
+        )
+
+        # IAM: DynamoDB API keys (read + update last_used_at)
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem"],
+                resources=[api_keys_table_arn, f"{api_keys_table_arn}/index/*"],
+            )
+        )
+
+        # IAM: S3 for SQLite database
+        bucket_arn = f"arn:aws:s3:::{db_snapshots_bucket}"
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObject", "s3:PutObject", "s3:HeadObject"],
+                resources=[f"{bucket_arn}/{product_name}/*"],
+            )
+        )
+
+        # Lambda function URL (public — CloudFront is the entry point)
+        fn_url = fn.add_function_url(
+            auth_type=_lambda.FunctionUrlAuthType.NONE,
+        )
+
+        # ──────────────────────────────────────────────
+        # CloudFront Distribution
+        # ──────────────────────────────────────────────
+        self.distribution = cloudfront.Distribution(
+            self,
+            "CDN",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.FunctionUrlOrigin(fn_url),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+            ),
+        )
+
+        # ──────────────────────────────────────────────
+        # Outputs
+        # ──────────────────────────────────────────────
+        cdk.CfnOutput(self, "AppUrl",
+                       value=f"https://{self.distribution.distribution_domain_name}")
+        cdk.CfnOutput(self, "LambdaFunctionUrl", value=fn_url.url)
+        cdk.CfnOutput(self, "CloudFrontDomain",
+                       value=self.distribution.distribution_domain_name)
+
+
+# ══════════════════════════════════════════════════════
+# Full Stack: Fargate + ALB
+# ══════════════════════════════════════════════════════
 
 class ProductStack(cdk.Stack):
     def __init__(
@@ -28,16 +147,11 @@ class ProductStack(cdk.Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # ──────────────────────────────────────────────
-        # Tags — applied to ALL resources in this stack
-        # ──────────────────────────────────────────────
         cdk.Tags.of(self).add("ManagedBy", "tokenburner")
         cdk.Tags.of(self).add("tokenburner:stack", "product")
         cdk.Tags.of(self).add("tokenburner:product", product_name)
 
-        # ──────────────────────────────────────────────
         # Import base stack resources
-        # ──────────────────────────────────────────────
         vpc_id = cdk.Fn.import_value("tokenburner-vpc-id")
         vpc = ec2.Vpc.from_lookup(self, "Vpc", vpc_id=vpc_id)
 
@@ -73,7 +187,6 @@ class ProductStack(cdk.Stack):
             self, "OAuthSecret", secret_complete_arn=oauth_secret_arn
         )
 
-        # Route53 zone (optional — may not exist if no domain)
         zone_id = None
         zone_name = None
         try:
@@ -82,9 +195,7 @@ class ProductStack(cdk.Stack):
         except Exception:
             pass
 
-        # ──────────────────────────────────────────────
         # Log Group
-        # ──────────────────────────────────────────────
         log_group = logs.LogGroup(
             self,
             "Logs",
@@ -93,28 +204,17 @@ class ProductStack(cdk.Stack):
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
 
-        # ──────────────────────────────────────────────
         # Fargate Task Definition
-        # ──────────────────────────────────────────────
         task_def = ecs.FargateTaskDefinition(
-            self,
-            "TaskDef",
-            cpu=256,
-            memory_limit_mib=512,
+            self, "TaskDef", cpu=256, memory_limit_mib=512,
         )
 
-        # Grant secret access
         db_secret.grant_read(task_def.task_role)
         oauth_secret.grant_read(task_def.task_role)
 
-        # Grant API keys table read + update (for last_used_at tracking)
         task_def.task_role.add_to_policy(
             iam.PolicyStatement(
-                actions=[
-                    "dynamodb:GetItem",
-                    "dynamodb:Query",
-                    "dynamodb:UpdateItem",
-                ],
+                actions=["dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem"],
                 resources=[
                     cdk.Fn.import_value("tokenburner-api-keys-table-arn"),
                     f"{cdk.Fn.import_value('tokenburner-api-keys-table-arn')}/index/*",
@@ -122,7 +222,6 @@ class ProductStack(cdk.Stack):
             )
         )
 
-        # Grant Bedrock invoke access (for AI features)
         task_def.task_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
@@ -132,10 +231,9 @@ class ProductStack(cdk.Stack):
 
         container = task_def.add_container(
             "App",
-            image=ecs.ContainerImage.from_asset(os.path.join(os.path.dirname(__file__), "..")),
+            image=ecs.ContainerImage.from_asset(PROJECT_ROOT),
             logging=ecs.LogDrivers.aws_logs(
-                stream_prefix=product_name,
-                log_group=log_group,
+                stream_prefix=product_name, log_group=log_group,
             ),
             environment={
                 "PRODUCT_NAME": product_name,
@@ -157,14 +255,11 @@ class ProductStack(cdk.Stack):
                 retries=3,
             ),
         )
-
         container.add_port_mappings(
             ecs.PortMapping(container_port=8080, protocol=ecs.Protocol.TCP)
         )
 
-        # ──────────────────────────────────────────────
         # Fargate Service
-        # ──────────────────────────────────────────────
         service = ecs.FargateService(
             self,
             "Service",
@@ -177,9 +272,7 @@ class ProductStack(cdk.Stack):
             ),
         )
 
-        # ──────────────────────────────────────────────
         # ALB Target Group + Listener Rule
-        # ──────────────────────────────────────────────
         target_group = elbv2.ApplicationTargetGroup(
             self,
             "TargetGroup",
@@ -195,7 +288,6 @@ class ProductStack(cdk.Stack):
             ),
         )
 
-        # Route by host header: subdomain.domain.com
         elbv2.ApplicationListenerRule(
             self,
             "ListenerRule",
@@ -207,9 +299,7 @@ class ProductStack(cdk.Stack):
             target_groups=[target_group],
         )
 
-        # ──────────────────────────────────────────────
         # Route53 Record (if domain configured)
-        # ──────────────────────────────────────────────
         if zone_id and zone_name:
             alb_dns = cdk.Fn.import_value("tokenburner-alb-dns")
             zone = route53.HostedZone.from_hosted_zone_attributes(
@@ -235,6 +325,4 @@ class ProductStack(cdk.Stack):
 
     @staticmethod
     def _priority_from_name(name: str) -> int:
-        """Generate a deterministic ALB listener rule priority from the product name."""
-        # Hash to a number between 1-50000 to avoid collisions
         return (hash(name) % 49999) + 1
