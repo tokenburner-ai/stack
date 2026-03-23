@@ -20,7 +20,39 @@ Product:  <product_name>
 
 Ask: "Deploy to this account? [Y/n]" — do NOT proceed without confirmation.
 
-## Step 1: Deploy Base Stack
+## Step 1: Check for Retained DynamoDB Table
+
+The API keys table has a RETAIN removal policy. If a previous deployment was destroyed, the table may still exist and will cause `cdk deploy` to fail with "already exists".
+
+```bash
+AWS_PROFILE=<profile> aws dynamodb describe-table --table-name tokenburner-api-keys \
+  --query 'Table.{Name:TableName,Items:ItemCount,Status:TableStatus}' --output table 2>&1
+```
+
+If the table exists, ask the user:
+
+```
+An API keys table from a previous deployment was found (tokenburner-api-keys).
+It contains <ItemCount> key(s). You have two options:
+
+  1. Delete it — fresh start, old keys are lost
+  2. Keep it — existing keys will still work after deploy
+
+Delete the existing API keys table? [y/N]
+```
+
+If yes:
+```bash
+AWS_PROFILE=<profile> aws dynamodb delete-table --table-name tokenburner-api-keys
+# Wait for deletion
+AWS_PROFILE=<profile> aws dynamodb wait table-not-exists --table-name tokenburner-api-keys
+```
+
+If no: the CDK deploy will need to import the existing table. For now, delete and recreate is the supported path. Tell the user the table must be deleted to proceed with a fresh deploy.
+
+If the table does NOT exist, proceed normally.
+
+## Step 2: Deploy Base Stack
 
 ```bash
 cd base-stack/cdk
@@ -30,7 +62,7 @@ AWS_PROFILE=<profile> cdk deploy --require-approval never -c dev_mode=true
 
 Verify: `AWS_PROFILE=<profile> aws cloudformation describe-stacks --stack-name tokenburner-base --query 'Stacks[0].StackStatus'` should return `CREATE_COMPLETE` or `UPDATE_COMPLETE`.
 
-## Step 2: Create API Key
+## Step 3: Create API Key
 
 ```bash
 cd base-stack
@@ -39,7 +71,7 @@ AWS_PROFILE=<profile> python3 manage_keys.py create "dev-admin" --permissions re
 
 Save the `sk_...` key — you'll need it for verification and the user needs it to log in.
 
-## Step 3: Deploy Product Stack
+## Step 4: Deploy Product Stack
 
 ```bash
 cd product-template/cdk
@@ -49,7 +81,7 @@ AWS_PROFILE=<profile> cdk deploy --require-approval never -c dev_mode=true -c pr
 
 Extract the CloudFront URL from the stack outputs (`AppUrl`).
 
-## Step 4: Verification (9 checks)
+## Step 5: Verification (9 checks)
 
 Run ALL checks yourself. Do not ask the user to run them.
 
@@ -101,7 +133,7 @@ curl -s $URL/api-docs | grep -o '<title>.*</title>'
 curl -s $URL/openapi.json | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'swagger' not in d; print(f'OAS {d[\"openapi\"]} — {len(d[\"paths\"])} paths')"
 ```
 
-## Step 5: Cost Breakdown
+## Step 6: Cost Breakdown
 
 List actual resources and present costs:
 
@@ -124,7 +156,7 @@ Present cost table:
 | product | IAM | $0.00/mo |
 | **Total** | | **~$0.42/mo** |
 
-## Step 6: Present to User
+## Step 7: Present to User
 
 This is the user's first "wow" moment. Make it count.
 
