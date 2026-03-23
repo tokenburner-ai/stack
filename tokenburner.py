@@ -16,6 +16,7 @@ COMMANDS = {
     "extend":       ("extend-api.md",   "Add new API routes and database tables"),
     "domain":       ("setup-domain.md", "Attach a custom domain and SSL"),
     "upgrade neon": ("upgrade-neon.md", "Migrate from SQLite-on-S3 to Neon Postgres"),
+    "swap":         ("swap-context.md", "Save, load, and switch between product contexts"),
 }
 
 
