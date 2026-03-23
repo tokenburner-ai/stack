@@ -788,6 +788,102 @@ Note: Secrets Manager is the only real cost. Lambda and CloudFront stay free at 
 
 This is the user's first "wow" moment. Make it count — show them a working product, not a wall of terminal output.
 
+### Extending the API
+
+To add a new resource (e.g., "products"), follow this pattern:
+
+**1. Create a migration** — `migrations/003_products.sql`
+
+```sql
+CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    price REAL NOT NULL,
+    account_id INTEGER REFERENCES accounts(id),
+    active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+```
+
+Note: Use SQLite-compatible syntax for dev mode. The `db.py` layer handles translation for Postgres.
+
+**2. Add routes to `main.py`** following the existing CRUD pattern:
+
+- `@require_auth` for GET (read), `@require_write` for POST/PUT (write)
+- Return `jsonify(rows)` for lists, `jsonify(rows[0])` for single items
+- POST returns 201, PUT returns 200, missing records return 404
+- Use parameterized queries (`%s` placeholders) — `db.py` translates to `?` for SQLite
+
+**3. Write OAS3 docstrings** — flasgger reads these to generate `/openapi.json` and Swagger UI automatically.
+
+IMPORTANT: Use OpenAPI 3.0 format, NOT Swagger 2.0. The key differences:
+
+```python
+# GET with path parameter
+@app.route("/api/products/<int:product_id>", methods=["GET"])
+@require_auth
+def get_product(product_id):
+    """Get product by ID.
+    ---
+    tags: [Products]
+    parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema:
+          type: integer          # OAS3: type is inside schema
+    responses:
+      200:
+        description: Product object
+      404:
+        description: Not found
+    """
+
+# POST/PUT with JSON body
+@app.route("/api/products", methods=["POST"])
+@require_write
+def create_product():
+    """Create a product.
+    ---
+    tags: [Products]
+    requestBody:                   # OAS3: NOT "parameters: in: body"
+      required: true
+      content:
+        application/json:          # This tells Swagger UI to send Content-Type header
+          schema:
+            type: object
+            required: [name, price, account_id]
+            properties:
+              name:
+                type: string
+              price:
+                type: number
+              account_id:
+                type: integer
+    responses:
+      201:
+        description: Created product
+      400:
+        description: Validation error
+    """
+```
+
+Common mistakes to avoid:
+- `parameters: in: body` is Swagger 2.0 — use `requestBody` for OAS3
+- `type: integer` directly on a path param is Swagger 2.0 — wrap in `schema:`
+- Missing `content: application/json:` causes 415 Unsupported Media Type in Swagger UI
+
+**4. Deploy the update**
+
+```bash
+cd product-template/cdk
+AWS_PROFILE=tokenburner cdk deploy -c dev_mode=true -c product_name=<name>
+```
+
+Lambda updates in ~25 seconds. New routes appear in Swagger UI automatically — no manual spec editing.
+
+**5. Smoke test the new endpoints** — run POST/GET/PUT curls to verify before handing off to the user.
+
 ### Tear Down a Product (without affecting others)
 
 ```bash
