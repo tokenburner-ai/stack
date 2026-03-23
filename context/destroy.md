@@ -47,7 +47,7 @@ tokenburner-<product_name>:
   - Lambda function URL
 
 tokenburner-base:
-  - DynamoDB table (tokenburner-api-keys) — ALL API KEYS WILL BE LOST
+  - DynamoDB table (tokenburner-api-keys) — ALL API KEYS WILL BE LOST (has RETAIN policy, must delete manually after stack destroy)
   - S3 bucket (tokenburner-db-snapshots-<account>) — ALL DATABASE SNAPSHOTS WILL BE DELETED
   - Secrets Manager secret (tokenburner/google-oauth)
 
@@ -92,7 +92,17 @@ AWS_PROFILE=<profile> aws cloudformation describe-stacks --stack-name tokenburne
 # Should return "does not exist"
 ```
 
-## Step 5: Verify Clean
+## Step 5: Clean Up Retained Resources
+
+The DynamoDB API keys table has a RETAIN removal policy and survives `cdk destroy`. Delete it manually:
+
+```bash
+AWS_PROFILE=<profile> aws dynamodb delete-table --table-name tokenburner-api-keys 2>&1
+```
+
+Wait a few seconds for deletion to complete.
+
+## Step 6: Verify Clean
 
 ```bash
 AWS_PROFILE=<profile> aws cloudformation list-stacks \
