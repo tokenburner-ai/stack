@@ -23,7 +23,7 @@ chat_bp = Blueprint("chat", __name__)
 _bedrock = None
 _dynamodb = None
 
-MODEL_ID = os.environ.get("BEDROCK_MODEL", "your-model-id")
+MODEL_ID = os.environ.get("BEDROCK_MODEL", "us.amazon.nova-lite-v1:0")
 CONVERSATIONS_TABLE = os.environ.get("CONVERSATIONS_TABLE", "tokenburner-conversations")
 MAX_HISTORY = 20  # keep last N messages per conversation
 

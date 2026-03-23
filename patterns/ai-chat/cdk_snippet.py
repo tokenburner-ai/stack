@@ -38,4 +38,4 @@ knowledge_bucket.grant_read_write(task_def.task_role)
 # Add to container environment:
 # "CONVERSATIONS_TABLE": conversations_table.table_name,
 # "KNOWLEDGE_BUCKET": knowledge_bucket.bucket_name,
-# "BEDROCK_MODEL": "your-model-id",
+# "BEDROCK_MODEL": "us.amazon.nova-lite-v1:0",

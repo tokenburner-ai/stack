@@ -81,7 +81,7 @@ aws iam list-account-aliases
 aws configure get region
 
 # Bedrock — are models enabled?
-aws bedrock list-foundation-models --query 'modelSummaries[?true].{id:modelId,name:modelName,status:modelLifecycle.status}' --output table
+aws bedrock list-foundation-models --query 'modelSummaries[].{id:modelId,provider:providerName,status:modelLifecycle.status}' --output table
 
 # CDK — is the account bootstrapped?
 aws cloudformation describe-stacks --stack-name CDKToolkit --query 'Stacks[0].{Status:StackStatus,Created:CreationTime}' --output table 2>/dev/null || echo "CDK NOT BOOTSTRAPPED"
