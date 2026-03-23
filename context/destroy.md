@@ -94,13 +94,32 @@ AWS_PROFILE=<profile> aws cloudformation describe-stacks --stack-name tokenburne
 
 ## Step 5: Clean Up Retained Resources
 
-The DynamoDB API keys table has a RETAIN removal policy and survives `cdk destroy`. Delete it manually:
+The DynamoDB API keys table has a RETAIN removal policy and survives `cdk destroy`.
+
+Check if it still exists:
+
+```bash
+AWS_PROFILE=<profile> aws dynamodb describe-table --table-name tokenburner-api-keys \
+  --query 'Table.{Name:TableName,Items:ItemCount,Status:TableStatus}' --output table 2>&1
+```
+
+If the table exists, **ask the user:**
+
+```
+The DynamoDB API keys table (tokenburner-api-keys) was retained after stack destroy.
+This table contains your API keys. If you delete it, all keys will be lost and
+you'll need to create new ones on the next deploy.
+
+Delete the API keys table? [y/N]
+```
+
+Only delete if the user confirms with "y" or "yes":
 
 ```bash
 AWS_PROFILE=<profile> aws dynamodb delete-table --table-name tokenburner-api-keys 2>&1
 ```
 
-Wait a few seconds for deletion to complete.
+If the user says no, note that the table will remain and may cause a conflict on the next `cdk deploy`. The deploy context handles this — it will detect the existing table and reuse it.
 
 ## Step 6: Verify Clean
 
