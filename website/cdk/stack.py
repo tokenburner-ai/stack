@@ -33,6 +33,7 @@ class WebsiteStack(cdk.Stack):
         product_name: str,
         domain_name: str | None = None,
         subdomain: str = "www",
+        drive_lambda_url: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -109,6 +110,20 @@ class WebsiteStack(cdk.Stack):
         # ──────────────────────────────────────────────
         # CloudFront Distribution
         # ──────────────────────────────────────────────
+        drive_behaviors = {}
+        if drive_lambda_url:
+            drive_origin = origins.HttpOrigin(
+                drive_lambda_url.removeprefix("https://").rstrip("/"),
+            )
+            drive_behavior = cloudfront.BehaviorOptions(
+                origin=drive_origin,
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+            )
+            drive_behaviors = {"/drive": drive_behavior, "/drive/*": drive_behavior}
+
         distribution = cloudfront.Distribution(
             self,
             "Distribution",
@@ -117,6 +132,7 @@ class WebsiteStack(cdk.Stack):
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
             ),
+            additional_behaviors=drive_behaviors,
             default_root_object="index.html",
             error_responses=[
                 cloudfront.ErrorResponse(
