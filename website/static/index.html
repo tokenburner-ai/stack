@@ -5,86 +5,62 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Your Product</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 2rem;
+            text-decoration: none;
+            color: inherit;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            display: block;
+        }
+        .card:hover {
+            border-color: var(--accent);
+            box-shadow: 0 0 24px var(--accent-glow);
+        }
+        .card-icon { font-size: 2rem; margin-bottom: 0.75rem; }
+        .card h3 { font-size: 1.1rem; margin-bottom: 0.5rem; }
+        .card p { color: var(--text-muted); font-size: 0.9rem; }
+        .hero-cards {
+            position: relative;
+            z-index: 1;
+            padding: 0 2rem 4rem;
+        }
+    </style>
 </head>
 <body>
-    <nav>
-        <div class="nav-inner">
-            <a href="/" class="logo">Your Product</a>
-            <div class="nav-links">
-                <a href="#features">Features</a>
-                <a href="#pricing">Pricing</a>
-                <a href="/docs" class="btn btn-outline">API Docs</a>
-                <a href="/auth/login" class="btn btn-primary">Sign In</a>
-            </div>
-        </div>
-    </nav>
-
     <section class="hero">
         <div class="hero-backdrop">
             <canvas id="flames"></canvas>
         </div>
         <div class="hero-content">
             <h1>Burned a few to build this</h1>
-            <p>A short description of what your product does and why people should care.</p>
-            <div class="hero-actions">
-                <a href="/auth/login" class="btn btn-primary btn-large">Get Started</a>
-                <a href="/docs" class="btn btn-outline btn-large">View API Docs</a>
-            </div>
         </div>
     </section>
 
-    <section id="features" class="features">
-        <h2>Features</h2>
-        <div class="feature-grid">
-            <div class="feature-card">
-                <h3>Feature One</h3>
-                <p>Describe what this feature does and why it matters.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Feature Two</h3>
-                <p>Describe what this feature does and why it matters.</p>
-            </div>
-            <div class="feature-card">
-                <h3>Feature Three</h3>
-                <p>Describe what this feature does and why it matters.</p>
-            </div>
-        </div>
-    </section>
-
-    <section id="tools" class="features">
-        <h2>Tools</h2>
-        <div class="feature-grid">
-            <a href="/drive" class="feature-card" style="text-decoration:none;color:inherit;">
-                <h3>&#128190; Drive</h3>
-                <p>Your private file drive — upload, preview, and organize files backed by S3. Zero idle cost.</p>
+    <div class="hero-cards">
+        <div class="cards">
+            <a href="/docs" class="card">
+                <div class="card-icon">&#128196;</div>
+                <h3>API Docs</h3>
+                <p>Explore and test your API endpoints interactively.</p>
+            </a>
+            <a href="/drive" class="card">
+                <div class="card-icon">&#128190;</div>
+                <h3>Drive</h3>
+                <p>Your private file drive — upload, preview, and organize files backed by S3.</p>
             </a>
         </div>
-    </section>
-
-    <section id="pricing" class="pricing">
-        <h2>Pricing</h2>
-        <div class="pricing-grid">
-            <div class="pricing-card">
-                <h3>Free</h3>
-                <div class="price">$0<span>/mo</span></div>
-                <ul>
-                    <li>1,000 API calls/month</li>
-                    <li>Community support</li>
-                </ul>
-                <a href="/auth/login" class="btn btn-outline">Start Free</a>
-            </div>
-            <div class="pricing-card featured">
-                <h3>Pro</h3>
-                <div class="price">$29<span>/mo</span></div>
-                <ul>
-                    <li>100,000 API calls/month</li>
-                    <li>Priority support</li>
-                    <li>Custom integrations</li>
-                </ul>
-                <a href="/auth/login" class="btn btn-primary">Get Started</a>
-            </div>
-        </div>
-    </section>
+    </div>
 
     <footer>
         <div class="footer-brand">
@@ -94,7 +70,6 @@
     </footer>
 
     <script>
-    // Animated flame particles in the hero backdrop
     (function() {
         const canvas = document.getElementById('flames');
         const ctx = canvas.getContext('2d');
@@ -107,9 +82,7 @@
             h = canvas.height = hero.offsetHeight;
         }
 
-        function Particle() {
-            this.reset();
-        }
+        function Particle() { this.reset(); }
 
         Particle.prototype.reset = function() {
             this.x = Math.random() * w;
@@ -119,7 +92,6 @@
             this.life = 1;
             this.decay = 0.005 + Math.random() * 0.015;
             this.size = 1 + Math.random() * 2.5;
-            // Color: cycle through orange, red-orange, blue-white (like a flame in space)
             const t = Math.random();
             if (t < 0.4) {
                 this.r = 255; this.g = 120 + Math.random() * 80; this.b = 20;
@@ -146,7 +118,6 @@
             ctx.arc(this.x, this.y, this.size * this.life, 0, Math.PI * 2);
             ctx.fillStyle = `rgba(${this.r},${this.g},${this.b},${alpha})`;
             ctx.fill();
-            // Glow
             ctx.beginPath();
             ctx.arc(this.x, this.y, this.size * this.life * 3, 0, Math.PI * 2);
             ctx.fillStyle = `rgba(${this.r},${this.g},${this.b},${alpha * 0.15})`;
@@ -159,7 +130,7 @@
             particles = [];
             for (let i = 0; i < count; i++) {
                 const p = new Particle();
-                p.y = Math.random() * h; // spread initial positions
+                p.y = Math.random() * h;
                 p.life = Math.random();
                 particles.push(p);
             }
@@ -167,10 +138,7 @@
 
         function loop() {
             ctx.clearRect(0, 0, w, h);
-            for (const p of particles) {
-                p.update();
-                p.draw();
-            }
+            for (const p of particles) { p.update(); p.draw(); }
             requestAnimationFrame(loop);
         }
 
