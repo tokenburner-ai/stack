@@ -23,20 +23,18 @@ try:
         "specs_route": "/docs",
     }
     swagger_template = {
-        "openapi": "3.0.3",
+        "swagger": "2.0",
         "info": {
             "title": os.environ.get("PRODUCT_NAME", "Tokenburner Product"),
             "version": "1.0.0",
             "description": "Auto-generated API for your tokenburner product. "
                            "Authenticate with your API key using the Authorize button.",
         },
-        "components": {
-            "securitySchemes": {
-                "ApiKeyAuth": {
-                    "type": "apiKey", "in": "header", "name": "Authorization",
-                    "description": "API key: `Bearer sk_...`",
-                },
-            }
+        "securityDefinitions": {
+            "ApiKeyAuth": {
+                "type": "apiKey", "in": "header", "name": "Authorization",
+                "description": "API key: Bearer sk_...",
+            },
         },
         "security": [{"ApiKeyAuth": []}],
     }
