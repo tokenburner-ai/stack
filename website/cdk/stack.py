@@ -146,6 +146,7 @@ class WebsiteStack(cdk.Stack):
                 "/docs": api_behavior,
                 "/docs/*": api_behavior,
                 "/flasgger_static/*": api_behavior,
+                "/openapi.json": api_behavior,
                 "/health": api_behavior,
             })
 

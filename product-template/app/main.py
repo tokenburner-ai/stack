@@ -21,9 +21,9 @@ try:
         "static_url_path": "/flasgger_static",
         "swagger_ui": True,
         "specs_route": "/docs",
-        "openapi": "3.0.3",
     }
     swagger_template = {
+        "openapi": "3.0.3",
         "info": {
             "title": os.environ.get("PRODUCT_NAME", "Tokenburner Product"),
             "version": "1.0.0",
