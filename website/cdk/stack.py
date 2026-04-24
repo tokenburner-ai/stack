@@ -127,8 +127,6 @@ class WebsiteStack(cdk.Stack):
             extra_behaviors.update({
                 "/drive": drive_behavior,
                 "/drive/*": drive_behavior,
-                "/docs": drive_behavior,
-                "/docs/*": drive_behavior,
                 "/api/drive/*": drive_behavior,
             })
 
@@ -145,6 +143,9 @@ class WebsiteStack(cdk.Stack):
             )
             extra_behaviors.update({
                 "/api/*": api_behavior,
+                "/docs": api_behavior,
+                "/docs/*": api_behavior,
+                "/flasgger_static/*": api_behavior,
                 "/health": api_behavior,
             })
 
