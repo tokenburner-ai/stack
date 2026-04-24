@@ -87,7 +87,6 @@ class DevProductStack(cdk.Stack):
                 "S3_DB_BUCKET": db_snapshots_bucket,
                 "S3_DB_KEY": f"{product_name}{name_suffix}/dev.sqlite",
                 "API_KEYS_TABLE": api_keys_table_name,
-                "AWS_REGION": self.region,
             },
         )
 
