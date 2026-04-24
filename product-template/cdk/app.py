@@ -15,13 +15,15 @@ env = cdk.Environment(
 product_name = app.node.try_get_context("product_name") or "my-product"
 subdomain = app.node.try_get_context("subdomain") or product_name
 dev_mode = app.node.try_get_context("dev_mode") in (True, "true", "True", "1", "yes")
+name_suffix = app.node.try_get_context("name_suffix") or ""
 
 if dev_mode:
     DevProductStack(
         app,
-        f"tokenburner-{product_name}",
+        f"tokenburner-{product_name}{name_suffix}",
         env=env,
         product_name=product_name,
+        name_suffix=name_suffix,
     )
 else:
     ProductStack(

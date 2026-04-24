@@ -37,6 +37,7 @@ class DevProductStack(cdk.Stack):
         construct_id: str,
         *,
         product_name: str,
+        name_suffix: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -57,13 +58,15 @@ class DevProductStack(cdk.Stack):
         fn = _lambda.Function(
             self,
             "Handler",
-            function_name=f"tokenburner-{product_name}",
+            function_name=f"tokenburner-{product_name}{name_suffix}",
             runtime=_lambda.Runtime.PYTHON_3_12,
+            architecture=_lambda.Architecture.ARM_64,
             handler="lambda_handler.handler",
             code=_lambda.Code.from_asset(
                 path=PROJECT_ROOT,
                 bundling=cdk.BundlingOptions(
                     image=_lambda.Runtime.PYTHON_3_12.bundling_image,
+                    platform="linux/arm64",
                     command=[
                         "bash", "-c",
                         "pip install flask apig-wsgi boto3 flasgger -t /asset-output --quiet && "
@@ -79,8 +82,9 @@ class DevProductStack(cdk.Stack):
             environment={
                 "PRODUCT_NAME": product_name,
                 "S3_DB_BUCKET": db_snapshots_bucket,
-                "S3_DB_KEY": f"{product_name}/dev.sqlite",
+                "S3_DB_KEY": f"{product_name}{name_suffix}/dev.sqlite",
                 "API_KEYS_TABLE": api_keys_table_name,
+                "AWS_REGION": self.region,
             },
         )
 
@@ -126,7 +130,8 @@ class DevProductStack(cdk.Stack):
         # ──────────────────────────────────────────────
         cdk.CfnOutput(self, "AppUrl",
                        value=f"https://{self.distribution.distribution_domain_name}")
-        cdk.CfnOutput(self, "LambdaFunctionUrl", value=fn_url.url)
+        cdk.CfnOutput(self, "LambdaFunctionUrl", value=fn_url.url,
+                       description="Lambda function URL — use as /api/* origin for website CloudFront")
         cdk.CfnOutput(self, "CloudFrontDomain",
                        value=self.distribution.distribution_domain_name)
 

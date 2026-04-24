@@ -16,6 +16,7 @@ product_name = app.node.try_get_context("product_name") or "my-product"
 domain_name = app.node.try_get_context("domain_name")  # e.g., "myproduct.com" or None
 subdomain = app.node.try_get_context("subdomain") or "www"  # e.g., "www" or "@" for apex
 drive_lambda_url = app.node.try_get_context("drive_lambda_url")
+api_lambda_url = app.node.try_get_context("api_lambda_url")
 
 WebsiteStack(
     app,
@@ -25,6 +26,7 @@ WebsiteStack(
     domain_name=domain_name,
     subdomain=subdomain,
     drive_lambda_url=drive_lambda_url,
+    api_lambda_url=api_lambda_url,
 )
 
 app.synth()
