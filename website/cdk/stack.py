@@ -122,7 +122,11 @@ class WebsiteStack(cdk.Stack):
                 origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
             )
-            drive_behaviors = {"/drive": drive_behavior, "/drive/*": drive_behavior}
+            drive_behaviors = {
+                "/drive": drive_behavior,
+                "/drive/*": drive_behavior,
+                "/api/drive/*": drive_behavior,
+            }
 
         distribution = cloudfront.Distribution(
             self,
