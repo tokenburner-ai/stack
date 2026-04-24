@@ -15,7 +15,10 @@ env = cdk.Environment(
 product_name = app.node.try_get_context("product_name") or "my-product"
 subdomain = app.node.try_get_context("subdomain") or product_name
 dev_mode = app.node.try_get_context("dev_mode") in (True, "true", "True", "1", "yes")
-name_suffix = app.node.try_get_context("name_suffix") or ""
+name_suffix          = app.node.try_get_context("name_suffix") or ""
+api_keys_table_name  = app.node.try_get_context("api_keys_table_name") or None
+api_keys_table_arn   = app.node.try_get_context("api_keys_table_arn") or None
+db_snapshots_bucket  = app.node.try_get_context("db_snapshots_bucket") or None
 
 if dev_mode:
     DevProductStack(
@@ -24,6 +27,9 @@ if dev_mode:
         env=env,
         product_name=product_name,
         name_suffix=name_suffix,
+        api_keys_table_name=api_keys_table_name,
+        api_keys_table_arn=api_keys_table_arn,
+        db_snapshots_bucket=db_snapshots_bucket,
     )
 else:
     ProductStack(

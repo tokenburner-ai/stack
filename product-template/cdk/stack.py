@@ -38,6 +38,9 @@ class DevProductStack(cdk.Stack):
         *,
         product_name: str,
         name_suffix: str = "",
+        api_keys_table_name: str | None = None,
+        api_keys_table_arn: str | None = None,
+        db_snapshots_bucket: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -47,10 +50,10 @@ class DevProductStack(cdk.Stack):
         cdk.Tags.of(self).add("tokenburner:product", product_name)
         cdk.Tags.of(self).add("tokenburner:mode", "dev")
 
-        # Import base stack exports
-        api_keys_table_name = cdk.Fn.import_value("tokenburner-api-keys-table-name")
-        api_keys_table_arn = cdk.Fn.import_value("tokenburner-api-keys-table-arn")
-        db_snapshots_bucket = cdk.Fn.import_value("tokenburner-db-snapshots-bucket")
+        # Use provided values or import from base stack exports
+        api_keys_table_name = api_keys_table_name or cdk.Fn.import_value("tokenburner-api-keys-table-name")
+        api_keys_table_arn  = api_keys_table_arn  or cdk.Fn.import_value("tokenburner-api-keys-table-arn")
+        db_snapshots_bucket = db_snapshots_bucket or cdk.Fn.import_value("tokenburner-db-snapshots-bucket")
 
         # ──────────────────────────────────────────────
         # Lambda Function (Flask app via mangum)
