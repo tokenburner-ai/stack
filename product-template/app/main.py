@@ -32,11 +32,66 @@ try:
         },
         "securityDefinitions": {
             "ApiKeyAuth": {
-                "type": "apiKey", "in": "header", "name": "Authorization",
-                "description": "API key: Bearer sk_...",
+                "type": "apiKey", "in": "header", "name": "X-API-Key",
+                "description": "API key: sk_...",
             },
         },
         "security": [{"ApiKeyAuth": []}],
+        "paths": {
+            "/api/drive/list": {
+                "get": {
+                    "tags": ["Drive"],
+                    "summary": "List files and folders",
+                    "parameters": [{"name": "prefix", "in": "query", "type": "string", "default": "drive/"}],
+                    "responses": {"200": {"description": "File listing"}, "401": {"description": "Unauthorized"}},
+                }
+            },
+            "/api/drive/tree": {
+                "get": {
+                    "tags": ["Drive"],
+                    "summary": "Full folder tree",
+                    "responses": {"200": {"description": "Tree JSON"}, "401": {"description": "Unauthorized"}},
+                }
+            },
+            "/api/drive/url": {
+                "get": {
+                    "tags": ["Drive"],
+                    "summary": "Presigned download URL",
+                    "parameters": [{"name": "key", "in": "query", "required": True, "type": "string"}],
+                    "responses": {"200": {"description": "Presigned URL"}, "401": {"description": "Unauthorized"}},
+                }
+            },
+            "/api/drive/presign-upload": {
+                "post": {
+                    "tags": ["Drive"],
+                    "summary": "Presigned upload URL",
+                    "parameters": [{"in": "body", "name": "body", "schema": {
+                        "type": "object",
+                        "properties": {"key": {"type": "string"}, "content_type": {"type": "string"}},
+                    }}],
+                    "responses": {"200": {"description": "Presigned URL + fields"}, "401": {"description": "Unauthorized"}},
+                }
+            },
+            "/api/drive/delete": {
+                "delete": {
+                    "tags": ["Drive"],
+                    "summary": "Delete a file",
+                    "parameters": [{"name": "key", "in": "query", "required": True, "type": "string"}],
+                    "responses": {"200": {"description": "Deleted"}, "401": {"description": "Unauthorized"}},
+                }
+            },
+            "/api/drive/rename": {
+                "post": {
+                    "tags": ["Drive"],
+                    "summary": "Rename / move a file",
+                    "parameters": [{"in": "body", "name": "body", "schema": {
+                        "type": "object",
+                        "properties": {"old_key": {"type": "string"}, "new_key": {"type": "string"}},
+                    }}],
+                    "responses": {"200": {"description": "Renamed"}, "401": {"description": "Unauthorized"}},
+                }
+            },
+        },
     }
     swagger = Swagger(app, config=swagger_config, template=swagger_template)
 except ImportError:
