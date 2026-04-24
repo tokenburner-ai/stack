@@ -125,6 +125,8 @@ class WebsiteStack(cdk.Stack):
             drive_behaviors = {
                 "/drive": drive_behavior,
                 "/drive/*": drive_behavior,
+                "/docs": drive_behavior,
+                "/docs/*": drive_behavior,
                 "/api/drive/*": drive_behavior,
             }
 
