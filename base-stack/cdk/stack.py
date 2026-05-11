@@ -1,9 +1,11 @@
 """Tokenburner Base Stack — shared infrastructure for all products.
 
 Two modes:
-  dev_mode=True:  DynamoDB + S3 + Secrets Manager only (~$1/mo)
+  dev_mode=True:  DynamoDB + S3 + Secrets Manager + Dashboard Lambda/CF (~$1/mo)
   dev_mode=False: Full stack — VPC, ALB, ECS, Aurora, NAT Gateway (~$71/mo)
 """
+
+import os
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -17,8 +19,15 @@ from aws_cdk import (
     aws_secretsmanager as secretsmanager,
     aws_s3 as s3,
     aws_logs as logs,
+    aws_lambda as _lambda,
+    aws_cloudfront as cloudfront,
+    aws_cloudfront_origins as origins,
+    aws_iam as iam,
+    custom_resources as cr,
 )
 from constructs import Construct
+
+DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "..", "dashboard")
 
 
 class TokenburnerBaseStack(cdk.Stack):
@@ -101,13 +110,168 @@ class TokenburnerBaseStack(cdk.Stack):
         )
 
         # ──────────────────────────────────────────────
+        # DynamoDB — Feature registry (both modes)
+        # ──────────────────────────────────────────────
+        self.feature_registry_table = dynamodb.Table(
+            self,
+            "FeatureRegistry",
+            table_name="tokenburner-feature-registry",
+            partition_key=dynamodb.Attribute(
+                name="name",
+                type=dynamodb.AttributeType.STRING,
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+        )
+
+        # ──────────────────────────────────────────────
+        # Bootstrap API key — auto-mint on first deploy
+        # Lambda-backed custom resource: generates sk_<32hex>, writes to
+        # api-keys table if a bootstrap row does not already exist, returns
+        # the key (or existing key) as a stack output.
+        # ──────────────────────────────────────────────
+        bootstrap_fn = _lambda.Function(
+            self,
+            "BootstrapKeyFn",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="index.handler",
+            timeout=cdk.Duration.seconds(30),
+            code=_lambda.Code.from_inline(
+                "import json, secrets, boto3\n"
+                "from datetime import datetime, timezone\n"
+                "ddb = boto3.resource('dynamodb')\n"
+                "def handler(event, _ctx):\n"
+                "    props = event['ResourceProperties']\n"
+                "    table = ddb.Table(props['TableName'])\n"
+                "    name = props.get('KeyName', 'bootstrap-admin')\n"
+                "    if event['RequestType'] == 'Delete':\n"
+                "        return {'PhysicalResourceId': event.get('PhysicalResourceId','bootstrap')}\n"
+                "    existing = table.scan(\n"
+                "        FilterExpression='#n = :n',\n"
+                "        ExpressionAttributeNames={'#n': 'name'},\n"
+                "        ExpressionAttributeValues={':n': name},\n"
+                "    ).get('Items', [])\n"
+                "    if existing:\n"
+                "        return {'PhysicalResourceId': 'bootstrap', 'Data': {'ApiKey': existing[0]['key_id']}}\n"
+                "    key_id = 'sk_' + secrets.token_hex(16)\n"
+                "    table.put_item(Item={\n"
+                "        'key_id': key_id,\n"
+                "        'name': name,\n"
+                "        'active': True,\n"
+                "        'permissions': ['read', 'write'],\n"
+                "        'environments': ['*'],\n"
+                "        'created_at': datetime.now(timezone.utc).isoformat(),\n"
+                "        'created_by': 'base-stack-bootstrap',\n"
+                "        'description': 'Auto-generated admin key for tokenburner dashboard + feature installs',\n"
+                "    })\n"
+                "    return {'PhysicalResourceId': 'bootstrap', 'Data': {'ApiKey': key_id}}\n"
+            ),
+        )
+        self.api_keys_table.grant_read_write_data(bootstrap_fn)
+
+        bootstrap_provider = cr.Provider(
+            self, "BootstrapKeyProvider",
+            on_event_handler=bootstrap_fn,
+        )
+
+        bootstrap_cr = cdk.CustomResource(
+            self, "BootstrapKey",
+            service_token=bootstrap_provider.service_token,
+            properties={
+                "TableName": self.api_keys_table.table_name,
+                "KeyName": "bootstrap-admin",
+            },
+        )
+
+        bootstrap_key = bootstrap_cr.get_att_string("ApiKey")
+
+        # ──────────────────────────────────────────────
+        # Dashboard Lambda + CloudFront (both modes)
+        # ──────────────────────────────────────────────
+        dashboard_fn = _lambda.Function(
+            self,
+            "DashboardFn",
+            function_name="tokenburner-dashboard",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            architecture=_lambda.Architecture.ARM_64,
+            handler="lambda_handler.handler",
+            memory_size=512,
+            timeout=cdk.Duration.seconds(30),
+            code=_lambda.Code.from_asset(
+                path=DASHBOARD_DIR,
+                bundling=cdk.BundlingOptions(
+                    image=_lambda.Runtime.PYTHON_3_12.bundling_image,
+                    platform="linux/arm64",
+                    command=[
+                        "bash", "-c",
+                        "pip install -r requirements.txt -t /asset-output --quiet && "
+                        "cp -r app /asset-output/ && "
+                        "cp lambda_handler.py /asset-output/ && "
+                        "cp -r static /asset-output/",
+                    ],
+                ),
+            ),
+            environment={
+                "API_KEYS_TABLE": self.api_keys_table.table_name,
+                "FEATURE_REGISTRY_TABLE": self.feature_registry_table.table_name,
+            },
+        )
+
+        # IAM: read api-keys (for auth) and update last_used_at
+        dashboard_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["dynamodb:GetItem", "dynamodb:UpdateItem"],
+                resources=[self.api_keys_table.table_arn],
+            )
+        )
+        # IAM: scan feature-registry (for /api/features)
+        dashboard_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["dynamodb:Scan"],
+                resources=[self.feature_registry_table.table_arn],
+            )
+        )
+
+        dashboard_url = dashboard_fn.add_function_url(
+            auth_type=_lambda.FunctionUrlAuthType.NONE,
+        )
+
+        self.dashboard_distribution = cloudfront.Distribution(
+            self,
+            "DashboardCdn",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.FunctionUrlOrigin(dashboard_url),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+            ),
+        )
+
+        # ──────────────────────────────────────────────
         # Exports (both modes)
         # ──────────────────────────────────────────────
         self._export("api-keys-table-name", self.api_keys_table.table_name)
         self._export("api-keys-table-arn", self.api_keys_table.table_arn)
+        self._export("feature-registry-table-name", self.feature_registry_table.table_name)
+        self._export("feature-registry-table-arn", self.feature_registry_table.table_arn)
         self._export("oauth-secret-arn", self.oauth_secret.secret_arn)
         self._export("db-snapshots-bucket", self.db_snapshots_bucket.bucket_name)
+        self._export("dashboard-url", f"https://{self.dashboard_distribution.distribution_domain_name}")
         self._export("mode", "dev" if dev_mode else "full")
+
+        # Surface the bootstrap key + dashboard URL as named outputs so the
+        # CLI can parse them after `cdk deploy`.
+        cdk.CfnOutput(
+            self, "DashboardUrl",
+            value=f"https://{self.dashboard_distribution.distribution_domain_name}",
+            description="Tokenburner dashboard URL — open this in your browser",
+        )
+        cdk.CfnOutput(
+            self, "BootstrapApiKey",
+            value=bootstrap_key,
+            description="Admin API key for the dashboard and feature installs. Save this now.",
+        )
 
         # ──────────────────────────────────────────────
         # Dev mode stops here — no VPC, ALB, ECS, Aurora

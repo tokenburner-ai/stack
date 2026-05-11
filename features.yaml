@@ -1,0 +1,58 @@
+# Tokenburner feature manifest.
+#
+# `tokenburner install` reads this file and deploys each listed feature's CDK
+# stack after the base stack. Each feature's CDK stack must self-register in
+# the base stack's feature-registry DynamoDB table via a custom resource on
+# deploy. See drive/cdk/stack.py for the reference implementation.
+#
+# Two ways to reference a feature's code:
+#   repo:  git URL → cloned into ./features/<name>/ on install
+#   path:  absolute, or relative to the stack repo → used directly, no clone
+# A feature entry should set exactly one of these. `path:` is mostly for
+# local development before a feature repo has been published.
+#
+# Card metadata is informational only — the authoritative title/description
+# comes from the registry row the feature writes on deploy.
+
+features:
+  - name: drive
+    repo: https://github.com/tokenburner-ai/drive.git
+    branch: main
+    stack_name: tokenburner-drive
+    cdk_dir: cdk
+    subdomain: drive
+    card:
+      title: Token Drive
+      description: Personal file storage on S3, fronted by a Lambda+CloudFront UI.
+
+  - name: chat
+    repo: https://github.com/tokenburner-ai/chat.git
+    branch: main
+    stack_name: tokenburner-chat
+    cdk_dir: cdk
+    subdomain: chat
+    card:
+      title: Token Chat
+      description: AI chat with Bedrock streaming and DynamoDB-backed history.
+
+  - name: forums
+    repo: https://github.com/tokenburner-ai/forums.git
+    branch: main
+    stack_name: tokenburner-forums
+    cdk_dir: cdk
+    subdomain: forums
+    card:
+      title: Token Forums
+      description: Threaded discussion board, S3-backed so context files can read it.
+
+  - name: agent
+    repo: https://github.com/tokenburner-ai/agent.git
+    branch: main
+    stack_name: tokenburner-agent
+    cdk_dir: cdk
+    subdomain: agent
+    card:
+      title: Token Agent
+      description: Desktop agent app plus admin console for managing accounts and context.
+    contributes_cards:
+      - Administration

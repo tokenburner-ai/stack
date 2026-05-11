@@ -243,11 +243,24 @@ A heavy development day might cost $5-15 in Bedrock tokens. This is intentional 
 ### Dev Mode (~$1/mo)
 
 ```
-User → CloudFront (HTTPS) → Lambda (Flask app) → SQLite-on-S3
-                                                → DynamoDB (API keys)
+                           ┌──────────────────────────────────────┐
+User → CloudFront (HTTPS) →│ Dashboard Lambda  (one card/feature) │
+                           └──────────────────────────────────────┘
+                                          │
+                                          ▼
+                           ┌──────────────────────────────────────┐
+                           │ Feature Registry DDB   API Keys DDB  │
+                           └──────────────────────────────────────┘
+                                          ▲
+                 ┌────────────────────────┼────────────────────────┐
+                 │                        │                        │
+         Drive Lambda             Chat Lambda              Agent Lambda
+         + CF + S3 + DDB          + CF + Bedrock + DDB    + CF + DDB
+                 │                        │                        │
+                 └──── self-register via custom resource ──────────┘
 ```
 
-Three resources: Lambda serves your Flask app (API + static files), CloudFront provides HTTPS + caching, SQLite-on-S3 is your database. Deploy in minutes, iterate instantly, costs essentially nothing.
+Every feature is an independent CDK stack that imports the base's DDB exports and self-registers one row in the feature-registry table on deploy. The dashboard reads that table and renders one card per registered feature. Same base-stack API key gates everything.
 
 ### Full Stack (~$80/mo, production)
 
@@ -302,8 +315,11 @@ base-stack/
 | Resource | Purpose | Cost |
 |----------|---------|------|
 | DynamoDB table (api-keys) | Cross-service API key auth | ~$0.10/mo |
+| DynamoDB table (feature-registry) | One row per installed feature, read by the dashboard | ~$0.05/mo |
 | S3 bucket (db-snapshots) | SQLite databases + snapshots | ~$0.01/mo |
 | Secrets Manager (OAuth) | Google OAuth credentials (placeholder) | ~$0.40/mo |
+| Lambda (tokenburner-dashboard) | Flask app rendering one card per feature | free tier |
+| CloudFront distribution | HTTPS fronting the dashboard | ~$0/mo idle |
 
 **Full stack resources** (no `dev_mode` flag):
 
@@ -322,20 +338,28 @@ base-stack/
 **CloudFormation Exports** (consumed by product stacks):
 
 ```
+tokenburner-api-keys-table-name
+tokenburner-api-keys-table-arn
+tokenburner-feature-registry-table-name
+tokenburner-feature-registry-table-arn
+tokenburner-oauth-secret-arn
+tokenburner-db-snapshots-bucket
+tokenburner-dashboard-url
+tokenburner-mode
+# full stack only:
 tokenburner-vpc-id
 tokenburner-public-subnets
 tokenburner-private-subnets
 tokenburner-alb-arn
 tokenburner-alb-dns
 tokenburner-alb-security-group
-tokenburner-alb-https-listener-arn
+tokenburner-alb-listener-arn
 tokenburner-ecs-cluster-name
 tokenburner-ecs-cluster-arn
 tokenburner-route53-zone-id
 tokenburner-route53-zone-name
 tokenburner-db-secret-arn
 tokenburner-db-cluster-endpoint
-tokenburner-api-keys-table-name
 ```
 
 ### Product Stack (one per product)
@@ -636,20 +660,21 @@ Every product auto-generates OpenAPI docs:
 
 ## Operations
 
-Use the tokenburner CLI to load context for any operation. The CLI confirms your AWS account, then outputs task-specific instructions for the AI to follow.
+Use the tokenburner CLI to install the stack, deploy features, and manage the account. The CLI is a real orchestrator — it shells out to `cdk deploy`, reads stack outputs, clones feature repos listed in `features.yaml`, and caches the bootstrap API key at `~/.tokenburner/credentials` (mode 0600).
 
 ```bash
 python3 tokenburner.py <command>
 ```
 
-| Command | Context File | Purpose |
-|---------|-------------|---------|
-| `deploy` | context/deploy.md | Deploy base + product, verify (9 checks), present results + costs |
-| `status` | context/status.md | List stacks, resources, costs, health check |
-| `destroy` | context/destroy.md | Tear down all tokenburner stacks (confirms before destroying) |
-| `extend` | context/extend-api.md | Add new API routes, migrations, OAS3 docstrings |
-| `domain` | context/setup-domain.md | Attach custom domain + SSL (planned) |
-| `upgrade neon` | context/upgrade-neon.md | Migrate SQLite-on-S3 to Neon Postgres (planned) |
+| Command | Purpose |
+|---------|---------|
+| `install [--features a b]` | Deploy base stack, clone + deploy every feature in `features.yaml` |
+| `status` | Show deployed stacks, dashboard URL, registered features |
+| `deploy <feature\|base>` | Redeploy a single feature (or the base stack) |
+| `destroy [feature]` | Tear down one feature, or (with no args) everything after a confirm |
+| `domain <domain>` | Attach a custom domain to the dashboard (prints CDK instructions for now) |
+| `sso enable` | Write Google OAuth credentials to Secrets Manager |
+| `context <name>` | Legacy: print a context markdown file for AI-driven workflows |
 
 ### Configuration
 
@@ -669,16 +694,20 @@ Every command verifies AWS credentials against this config before proceeding.
 ### Quick Reference
 
 ```bash
-# First time setup + deploy
-python3 tokenburner.py deploy
+# First time: deploy base + every feature in features.yaml
+python3 tokenburner.py install
 
-# Check what's running and what it costs
+# Just one feature
+python3 tokenburner.py install --features drive
+
+# Check what's deployed
 python3 tokenburner.py status
 
-# Add new API endpoints
-python3 tokenburner.py extend
+# Redeploy one feature after code changes
+python3 tokenburner.py deploy drive
 
-# Tear everything down
+# Tear down one feature, or everything
+python3 tokenburner.py destroy drive
 python3 tokenburner.py destroy
 ```
 
@@ -816,7 +845,12 @@ You handle:
 ## What's Built
 
 - [x] This context file (tokenburner.md)
-- [x] Base stack CDK with dev_mode flag (dev: DynamoDB+S3+Secrets, full: +VPC+ALB+ECS+Aurora)
+- [x] Base stack CDK with dev_mode flag (dev: DynamoDB+S3+Secrets+Dashboard, full: +VPC+ALB+ECS+Aurora)
+- [x] **Feature registry DynamoDB table** — features self-register on deploy via custom resource
+- [x] **Unified dashboard Lambda + CloudFront** — one card per installed feature
+- [x] **Auto-generated bootstrap admin API key** — minted on base-stack deploy, surfaced via CFN output
+- [x] **Real tokenburner CLI** — `install`, `status`, `deploy`, `destroy`, `domain`, `sso`, `context`
+- [x] **`features.yaml` manifest** — drive, chat, forums, agent
 - [x] Product template with dual deployment (dev: Lambda+CloudFront, full: Fargate+ALB)
 - [x] Dual-mode database (Postgres or SQLite-on-S3) with auto SQL translation
 - [x] Database branching CLI (save/restore snapshots to S3)
@@ -832,9 +866,10 @@ You handle:
 
 ## What's Not Built Yet
 
-- [ ] Auto-generate API key during base stack deploy
+- [ ] Feature repos themselves: `chat`, `forums`, `agent` (drive is being migrated first)
+- [ ] Drive self-registration custom resource (in progress)
+- [ ] `tokenburner domain` full automation
+- [ ] `tokenburner sso enable` already writes the secret, but feature stacks need to pick it up automatically
 - [ ] CI/CD pipeline template (GitHub Actions)
 - [ ] Monitoring / alerting templates (CloudWatch dashboards)
 - [ ] Multi-region deployment
-- [ ] Custom domain setup automation
-- [ ] The storage product itself

@@ -9,3 +9,6 @@ node_modules/
 .env
 .tokenburner.json
 *.exe
+
+# Feature repos cloned by `tokenburner install` — not tracked in the stack repo.
+features/

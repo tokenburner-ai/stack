@@ -1,166 +1,114 @@
-# Token Stack
+# Tokenburner Stack
 
-Deploy a production SaaS into your AWS account in 7 minutes.
-Then tell your AI assistant what to build.
+A low-cost, install-and-forget AWS stack. Clone it, point your AI coding
+assistant at it, and in under ten minutes you have a dashboard URL in your
+own AWS account with one card per installed feature:
 
-## How it works
+- **Drive** — personal file storage on S3
+- **Chat** — AI chat with streaming responses and conversation history
+- **Forums** — threaded discussion board, S3-backed
+- **Agent** — admin console for managing accounts, access keys, and shared context
 
-Fork this repo. Run `tokenburner deploy`. You get a live HTTPS endpoint with authentication, a database, Swagger API docs, and a dashboard — all running on your own AWS account. Then point any AI coding assistant at the repo and describe what you want to build. The context file keeps the AI aligned across sessions.
+Everything runs in **dev mode** by default — one Lambda + CloudFront per
+feature, DynamoDB on-demand, S3 on-demand. Idle cost is ~$1/mo for the whole
+platform.
+
+## Install
+
+You need an AWS account and the AWS CLI configured (`aws configure`). Then:
+
+```bash
+git clone https://github.com/tokenburner-ai/stack.git
+cd stack
+```
+
+Open the repo in any AI coding assistant that reads `CLAUDE.md`. It will:
+
+1. Check prerequisites (Node.js, Python, Docker, CDK).
+2. Verify your AWS credentials.
+3. Ask which features you want.
+4. Deploy the base stack and each feature.
+5. Hand you a dashboard URL and an admin API key.
+
+If you'd rather run the CLI directly:
+
+```bash
+pip install pyyaml
+python3 tokenburner.py install
+```
+
+## What you get
+
+```
+                           ┌──────────────────────────────────────┐
+User → CloudFront (HTTPS) →│ Dashboard Lambda  (one card/feature) │
+                           └──────────────────────────────────────┘
+                                          │
+                                          ▼
+                           ┌──────────────────────────────────────┐
+                           │ Feature Registry DDB   API Keys DDB  │
+                           └──────────────────────────────────────┘
+                                          ▲
+                 ┌────────────────────────┼────────────────────────┐
+                 │                        │                        │
+         Drive Lambda             Chat Lambda              Agent Lambda
+         + CF + S3 + DDB          + CF + Bedrock + DDB    + CF + DDB
+                 │                        │                        │
+                 └──── self-register via custom resource ──────────┘
+```
+
+Each feature is its own CDK stack that imports from the base and writes one
+row into the feature-registry table on deploy. The dashboard reads that
+table and renders one card per registered feature.
+
+## Costs
+
+| Resource | Count | Idle cost |
+|----------|-------|-----------|
+| Lambda functions | 1 + N features | free tier |
+| CloudFront distributions | 1 + N features | $0/mo idle |
+| DynamoDB tables (on-demand) | 2 + feature tables | ~$0.30/mo |
+| S3 buckets | 1 + feature buckets | ~$0.02/mo |
+| Secrets Manager | 1 (OAuth placeholder) | ~$0.40/mo |
+
+No VPC, no NAT Gateway, no ALB, no Aurora in dev mode. Full-stack mode
+(Fargate + Aurora + ALB) is a supported upgrade path at ~$80/mo idle.
+
+## Commands
+
+```bash
+python3 tokenburner.py install [--features a b c]   # base + features
+python3 tokenburner.py status                        # what's deployed
+python3 tokenburner.py deploy <feature>              # redeploy one
+python3 tokenburner.py destroy [feature]             # remove one or all
+python3 tokenburner.py domain <domain>               # attach a custom domain
+python3 tokenburner.py sso enable                    # Google OAuth setup
+```
+
+## Adding your own feature
+
+Each feature is an independent repo. The contract is:
+
+- A CDK stack that imports two exports from the base stack:
+  `tokenburner-api-keys-table-name` and
+  `tokenburner-feature-registry-table-name`.
+- An `AwsCustomResource` that writes one row to the feature registry on
+  create/update, and deletes it on destroy. That row is what makes the card
+  appear in the dashboard.
+- An API gated by the shared `require_auth` decorator (see
+  `base-stack/dashboard/app/auth.py`).
+
+The simplest reference is [drive](https://github.com/tokenburner-ai/drive).
+Copy its layout, rename, and add your feature to `features.yaml`.
 
 ## Architecture
 
-### Dev Mode (default — $0.42/mo)
+See [`tokenburner.md`](./tokenburner.md) for the architecture document and
+conventions. The short version: one base stack provides shared infrastructure
+(API-key store, feature registry, dashboard CloudFront+Lambda, auto-minted
+bootstrap admin key), and each feature is an independent CDK stack that
+imports what it needs.
 
-```
-                    ┌──────────────────────────────────────────────┐
-                    │                  CloudFront                   │
- Browser ──HTTPS──▶ │              (CDN + HTTPS)                   │
-                    └──────────────────┬───────────────────────────┘
-                                       │
-                    ┌──────────────────▼───────────────────────────┐
-                    │              Lambda Function                  │
-                    │         (Python 3.12 / Flask)                 │
-                    │                                              │
-                    │  ┌─────────┐  ┌──────────┐  ┌────────────┐  │
-                    │  │ Routes  │  │ Swagger  │  │    Auth    │  │
-                    │  │ main.py │  │  /docs   │  │  API Keys  │  │
-                    │  └─────────┘  └──────────┘  └────────────┘  │
-                    └──────┬──────────────┬───────────────┬────────┘
-                           │              │               │
-              ┌────────────▼──┐  ┌────────▼────┐  ┌──────▼──────┐
-              │  SQLite-on-S3 │  │  DynamoDB   │  │   Secrets   │
-              │  (database)   │  │ (API keys)  │  │   Manager   │
-              │               │  │             │  │             │
-              │  + branching  │  │  free tier  │  │  $0.40/mo   │
-              │  + snapshots  │  │  $0.00/mo   │  │             │
-              │  $0.01/mo     │  │             │  │             │
-              └───────────────┘  └─────────────┘  └─────────────┘
-```
+## License
 
-### Full Stack (upgrade path — ~$71/mo)
-
-```
-                    ┌──────────────────────────────────────────────┐
-                    │               ALB (Load Balancer)             │
- Browser ──HTTPS──▶ │              + ACM Certificate                │
-                    └──────────────────┬───────────────────────────┘
-                                       │
-                    ┌──────────────────▼───────────────────────────┐
-                    │              ECS Fargate                      │
-                    │         (Python 3.12 / Gunicorn)             │
-                    │         Auto-scaling containers              │
-                    └──────┬──────────────┬───────────────┬────────┘
-                           │              │               │
-              ┌────────────▼──┐  ┌────────▼────┐  ┌──────▼──────┐
-              │    Aurora      │  │  DynamoDB   │  │   Secrets   │
-              │  PostgreSQL    │  │ (API keys)  │  │   Manager   │
-              │  Serverless v2 │  │             │  │             │
-              │               │  │             │  │             │
-              └───────────────┘  └─────────────┘  └─────────────┘
-```
-
-The same application code runs on both. `db.py` auto-translates SQL between SQLite and Postgres. Switch with one config change when you're ready to scale.
-
-## Tech Stack
-
-| Layer | Dev Mode | Full Stack |
-|-------|----------|------------|
-| **Compute** | Lambda (Python 3.12) | ECS Fargate (Gunicorn) |
-| **CDN / TLS** | CloudFront | ALB + ACM |
-| **Database** | SQLite-on-S3 | Aurora PostgreSQL Serverless v2 |
-| **Auth** | DynamoDB API keys + Google OAuth | Same |
-| **Secrets** | AWS Secrets Manager | Same |
-| **IaC** | AWS CDK (Python) | Same |
-| **API Docs** | Swagger UI (auto-generated from docstrings) | Same |
-| **AI Context** | `tokenburner.md` — keeps any AI assistant aligned | Same |
-
-### Key Design Decisions
-
-- **Dual-mode database** — `db.py` speaks both SQLite and Postgres. Write SQL once, it runs on either. Dev on SQLite-on-S3 for free, upgrade to Aurora when traffic demands it.
-- **AI-native** — The `tokenburner.md` context file is the product definition. It tells your AI assistant the schema, conventions, deployment target, and what's already built. Works with Claude, ChatGPT, Copilot, or any coding assistant.
-- **Context swap** — Save and restore entire product definitions (routes, schema, static files, database) via S3 snapshots. Switch between products in ~52 seconds.
-- **OAS3 docstrings** — Write OpenAPI 3.0 specs inline in Python docstrings. Swagger UI generates automatically. No separate spec file to maintain.
-- **Zero-cost default** — Lambda free tier covers 1M requests/month. S3 costs pennies. You pay $0.40/mo for Secrets Manager and nothing else until real traffic arrives.
-
-## What it costs
-
-| Resource | Dev Mode | Full Stack |
-|---|---|---|
-| Compute | $0.00 (Lambda free tier) | ~$30 (Fargate) |
-| CDN / TLS | $0.00 (CloudFront free tier) | ~$18 (ALB) |
-| Database | $0.01 (S3) | ~$15 (Aurora Serverless) |
-| Auth | $0.00 (DynamoDB free tier) | $0.00 |
-| Secrets | $0.40 | $0.40 |
-| NAT Gateway | — | ~$8 |
-| **Total** | **$0.42/mo** | **~$71/mo** |
-
-## Get started
-
-```bash
-git clone https://github.com/tokenburner-ai/stack
-cd stack
-tokenburner deploy
-```
-
-After deploy completes (~7 min first time, ~25 sec updates):
-1. Visit your CloudFront URL
-2. Open `/docs` for Swagger API docs
-3. Use the generated API key to authenticate
-4. Point your AI assistant at `tokenburner.md` and start building
-
-## What's inside
-
-```
-stack/
-├── tokenburner.md              # AI context — the product definition
-├── tokenburner.py              # CLI: deploy, status, destroy, extend, swap
-├── context/                    # Sub-contexts for each CLI command
-│   ├── deploy.md               # Deploy guide + verification steps
-│   ├── destroy.md              # Safe teardown with DynamoDB cleanup
-│   ├── extend-api.md           # Adding routes + OAS3 docstrings
-│   ├── setup-domain.md         # Custom domain via Route53 / Cloudflare
-│   ├── upgrade-neon.md         # SQLite → Postgres migration path
-│   └── swap-context.md         # Save/restore product definitions
-├── base-stack/                 # Shared infra CDK
-│   └── cdk/                    # DynamoDB, S3, Secrets Manager
-├── product-template/           # Your application
-│   ├── app/
-│   │   ├── main.py             # Flask routes + Swagger docstrings
-│   │   ├── db.py               # Dual-mode: SQLite-on-S3 / Postgres
-│   │   ├── auth.py             # API keys (DynamoDB) + Google OAuth
-│   │   ├── migrate.py          # Auto-run SQL migrations on deploy
-│   │   └── context_swap.py     # Save/load product snapshots via S3
-│   ├── migrations/             # SQL schema (auto-translates per DB mode)
-│   ├── static/                 # Frontend (login SPA, dashboard)
-│   └── cdk/                    # Lambda+CloudFront or Fargate+ALB
-├── patterns/                   # Drop-in feature patterns
-│   ├── static-spa/             # Static site on CloudFront
-│   ├── ai-chat/                # Bedrock AI chat with SSE streaming
-│   └── background-job/         # Async task processing
-└── website-template/           # Marketing site on CloudFront
-```
-
-## Patterns
-
-Drop-in features you can add to any Token Stack product:
-
-| Pattern | What it adds |
-|---------|-------------|
-| **static-spa** | CloudFront distribution for a frontend SPA |
-| **ai-chat** | Bedrock-powered AI chat with SSE streaming |
-| **background-job** | Async task queue with Lambda workers |
-
-## Roadmap
-
-- [ ] `tokenburner` CLI as pip-installable package
-- [ ] CI/CD pipeline template (GitHub Actions)
-- [ ] Monitoring + alerting templates (CloudWatch)
-- [ ] Template generator (scaffold new products from CLI)
-- [ ] Domain setup automation
-- [ ] Neon Postgres upgrade path (alternative to Aurora)
-
-## Links
-
-- [tokenburner.ai](https://tokenburner.ai) — Project site
-- [Token Stack](https://tokenburner.ai/stack) — Product page
-- [API Preview](https://tokenburner.ai/api-docs) — See what you get before deploying
+MIT.
