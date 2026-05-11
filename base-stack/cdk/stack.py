@@ -88,7 +88,7 @@ class TokenburnerBaseStack(cdk.Stack):
         self.db_snapshots_bucket = s3.Bucket(
             self,
             "DbSnapshots",
-            bucket_name=f"tokenburner-db-snapshots-{cdk.Aws.ACCOUNT_ID}",
+            bucket_name=f"tokenburner-db-snapshots-{cdk.Aws.ACCOUNT_ID}-{cdk.Aws.REGION}",
             removal_policy=cdk.RemovalPolicy.DESTROY,
             auto_delete_objects=True,
             versioned=True,

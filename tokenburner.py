@@ -90,7 +90,10 @@ def run_aws(args: list, profile: str, region: str | None = None, parse: bool = T
 
 
 def verify_account(config: dict) -> dict:
-    identity = run_aws(["sts", "get-caller-identity"], profile=config["aws_profile"])
+    identity = run_aws(
+        ["sts", "get-caller-identity"],
+        profile=config["aws_profile"], region=config["region"],
+    )
     if identity["Account"] != config.get("account_id"):
         sys.exit(f"Account mismatch. Config expects {config.get('account_id')}, got {identity['Account']}.")
     return identity
@@ -147,6 +150,26 @@ def _cdk_cmd() -> list:
     sys.exit("Neither `cdk` nor `npx` found on PATH. Install aws-cdk: npm install -g aws-cdk")
 
 
+def _cdk_env(config: dict) -> dict:
+    """Build subprocess env for cdk that always deploys to config['region'].
+
+    Strips any AWS_REGION / AWS_DEFAULT_REGION inherited from the parent shell
+    so a user whose shell has AWS_REGION pinned to a different region still
+    gets the deploy they asked for. Both variables are re-set explicitly
+    because boto3 and the CDK CLI check different precedence orders.
+    """
+    region = config["region"]
+    env = dict(os.environ)
+    for k in ("AWS_REGION", "AWS_DEFAULT_REGION", "CDK_DEFAULT_REGION", "CDK_DEFAULT_ACCOUNT", "AWS_PROFILE"):
+        env.pop(k, None)
+    env["AWS_PROFILE"] = config["aws_profile"]
+    env["AWS_REGION"] = region
+    env["AWS_DEFAULT_REGION"] = region
+    env["CDK_DEFAULT_REGION"] = region
+    env["CDK_DEFAULT_ACCOUNT"] = config["account_id"]
+    return env
+
+
 def cdk_deploy(cdk_dir: str, stack_name: str | None, config: dict, context: dict | None = None) -> None:
     args = _cdk_cmd() + ["deploy"]
     if stack_name:
@@ -154,29 +177,17 @@ def cdk_deploy(cdk_dir: str, stack_name: str | None, config: dict, context: dict
     args += ["--require-approval", "never"]
     for k, v in (context or {}).items():
         args += ["-c", f"{k}={v}"]
-    env = {
-        **os.environ,
-        "AWS_PROFILE": config["aws_profile"],
-        "CDK_DEFAULT_ACCOUNT": config["account_id"],
-        "CDK_DEFAULT_REGION": config["region"],
-    }
-    print(f"\n→ cdk deploy {stack_name or ''}  (in {cdk_dir})")
-    result = subprocess.run(args, cwd=cdk_dir, env=env)
+    print(f"\n→ cdk deploy {stack_name or ''}  (in {cdk_dir})  region={config['region']}")
+    result = subprocess.run(args, cwd=cdk_dir, env=_cdk_env(config))
     if result.returncode != 0:
         sys.exit(f"cdk deploy failed for {stack_name or cdk_dir}")
 
 
 def cdk_destroy(cdk_dir: str, stack_name: str, config: dict) -> None:
-    env = {
-        **os.environ,
-        "AWS_PROFILE": config["aws_profile"],
-        "CDK_DEFAULT_ACCOUNT": config["account_id"],
-        "CDK_DEFAULT_REGION": config["region"],
-    }
-    print(f"\n→ cdk destroy {stack_name}  (in {cdk_dir})")
+    print(f"\n→ cdk destroy {stack_name}  (in {cdk_dir})  region={config['region']}")
     result = subprocess.run(
         _cdk_cmd() + ["destroy", stack_name, "--force"],
-        cwd=cdk_dir, env=env,
+        cwd=cdk_dir, env=_cdk_env(config),
     )
     if result.returncode != 0:
         sys.exit(f"cdk destroy failed for {stack_name}")
@@ -228,6 +239,25 @@ def resolve_feature_dir(feature: dict) -> str:
 
 # ─── Subcommands ──────────────────────────────────────────
 
+def ensure_cdk_bootstrap(config: dict) -> None:
+    """Bootstrap CDK in the target region if it isn't already."""
+    try:
+        run_aws(
+            ["cloudformation", "describe-stacks", "--stack-name", "CDKToolkit"],
+            profile=config["aws_profile"], region=config["region"],
+        )
+        return
+    except SystemExit:
+        pass
+    print(f"\nCDK is not bootstrapped in {config['region']}. Bootstrapping now...")
+    result = subprocess.run(
+        _cdk_cmd() + ["bootstrap", f"aws://{config['account_id']}/{config['region']}"],
+        env=_cdk_env(config),
+    )
+    if result.returncode != 0:
+        sys.exit("cdk bootstrap failed")
+
+
 def cmd_install(args):
     config = load_config(interactive=True)
     verify_account(config)
@@ -239,6 +269,8 @@ def cmd_install(args):
 
     print(f"\nInstalling tokenburner to account {config['account_id']} in {config['region']}.")
     print(f"Base stack + {len(features)} feature(s): {', '.join(f['name'] for f in features) or '(none)'}\n")
+
+    ensure_cdk_bootstrap(config)
 
     # 1. Base stack
     cdk_deploy(BASE_STACK_DIR, BASE_STACK_NAME, config, context={"dev_mode": "true"})
