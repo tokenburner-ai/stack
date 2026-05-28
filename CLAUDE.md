@@ -2,8 +2,10 @@
 
 You are helping the user install the tokenburner stack into their AWS account.
 The goal is that from a fresh clone of this repo the user gets a working
-dashboard URL with working feature cards in under ten minutes, without ever
-opening a CDK file.
+dashboard URL with working feature cards in about 30 minutes, without ever
+opening a CDK file. Most of that time is CloudFront waiting for eventual
+consistency on each feature — there's nothing the user can do to speed it up,
+so set expectations honestly up front.
 
 ## Decisions Claude makes on behalf of the user
 
@@ -29,6 +31,9 @@ python3 -c "import yaml" 2>/dev/null || pip install pyyaml --break-system-packag
 ```
 
 If Docker isn't running, instruct the user to start it. CDK bundling needs it.
+
+The `--break-system-packages` flag is required on stock macOS Python 3.12+
+(Homebrew's PEP 668 protection). On Linux or virtualenv it's a no-op.
 
 ### Step 2 — Verify AWS credentials
 
@@ -57,20 +62,33 @@ Tell the user: "Chat uses AWS Bedrock (Claude Haiku by default). The other
 features don't make any AI calls." This is the only place `Claude` may be
 mentioned — it's describing what the feature is, not branding the stack.
 
-### Step 4 — Initialize config and install
+### Step 4 — Run install
 
-If `.tokenburner.json` doesn't exist, write it directly with the profile,
-region, and account ID you discovered in step 2. Do not use interactive
-prompts. Then:
+The CLI now auto-seeds `.tokenburner.json` from the AWS CLI's existing
+credentials, so you don't need to write the config file manually. Just run:
 
 ```bash
 python3 tokenburner.py install --features drive chat forums agent
 ```
 
-Substitute the feature list based on the user's selection from step 3.
+If you need to override the AWS profile or region, pass `--profile` and
+`--region` flags. Substitute the feature list based on the user's selection
+from step 3.
 
-Deploys take ~3 min (base) + ~5 min per feature. Report progress honestly —
-don't pretend something is done when it isn't.
+Realistic timing for a fresh-account install:
+- Base stack: ~5 min (CloudFront + custom-resource Lambda)
+- Drive: ~3 min
+- Chat: ~6 min
+- Forums: ~6-12 min (CloudFront eventual consistency varies)
+- Agent: ~9 min (two Lambdas, IAM policies, two CloudFront distributions)
+- **Total full install: ~25-35 min, mostly wall clock waiting on CloudFront**
+
+Report progress honestly — don't pretend something is done when it isn't.
+
+The CLI runs a Bedrock pre-flight before any feature deploys if `chat` is
+in the install list. If the configured model isn't enabled in the user's
+target region, install will exit early with a console URL for the user to
+enable it. Walk them through that step before retrying.
 
 ### Step 5 — Hand off the dashboard URL
 

@@ -57,23 +57,70 @@ LEGACY_CONTEXT_COMMANDS = {
 
 # ─── Config + AWS helpers ────────────────────────────────
 
-def load_config(interactive: bool = True) -> dict:
+def _detect_profile_and_region(profile_arg: str | None, region_arg: str | None) -> tuple[str, str]:
+    """Pick AWS profile + region without prompting.
+
+    Precedence:
+    1. CLI flags (--profile, --region)
+    2. Environment variables (AWS_PROFILE, AWS_REGION/AWS_DEFAULT_REGION)
+    3. AWS CLI defaults (`aws configure get region`)
+    4. Hard defaults: profile=default, region=us-west-2
+
+    Verifies the credential is usable via `aws sts get-caller-identity`. If
+    the call fails the user gets a one-line error pointing at `aws configure`.
+    """
+    profile = profile_arg or os.environ.get("AWS_PROFILE") or "default"
+    region = (
+        region_arg
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+    )
+    if not region:
+        # Try the profile's configured region.
+        try:
+            r = subprocess.run(
+                ["aws", "configure", "get", "region", "--profile", profile],
+                capture_output=True, text=True, check=False,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                region = r.stdout.strip()
+        except Exception:
+            pass
+    if not region:
+        region = "us-west-2"
+    return profile, region
+
+
+def load_config(
+    interactive: bool = True,
+    profile_arg: str | None = None,
+    region_arg: str | None = None,
+) -> dict:
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE) as f:
             return json.load(f)
     if not interactive:
         sys.exit(f"No config at {CONFIG_FILE}. Run `tokenburner install` first.")
-    print(f"No config found. Creating {CONFIG_FILE}...\n")
+
+    profile, region = _detect_profile_and_region(profile_arg, region_arg)
+    print(f"Detecting AWS account...  (profile={profile}, region={region})")
+    try:
+        identity = run_aws(["sts", "get-caller-identity"], profile=profile, region=region)
+    except SystemExit:
+        sys.exit(
+            "Could not call `aws sts get-caller-identity`. Run `aws configure` "
+            "(or `aws configure --profile <name>`) and try again."
+        )
+
     cfg = {
-        "aws_profile": input("AWS profile name [tokenburner]: ").strip() or "tokenburner",
-        "region": input("AWS region [us-west-2]: ").strip() or "us-west-2",
-        "product_name": input("Product name [demo]: ").strip() or "demo",
+        "aws_profile": profile,
+        "region": region,
+        "product_name": "demo",
+        "account_id": identity["Account"],
     }
-    identity = run_aws(["sts", "get-caller-identity"], profile=cfg["aws_profile"])
-    cfg["account_id"] = identity["Account"]
     with open(CONFIG_FILE, "w") as f:
         json.dump(cfg, f, indent=2)
-    print(f"\nConfig saved to {CONFIG_FILE}")
+    print(f"Config saved to {CONFIG_FILE}: account={cfg['account_id']}, region={cfg['region']}")
     return cfg
 
 
@@ -258,8 +305,52 @@ def ensure_cdk_bootstrap(config: dict) -> None:
         sys.exit("cdk bootstrap failed")
 
 
+# Default model for chat — must match chat/cdk/stack.py.
+DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def ensure_bedrock_model(config: dict, model_id: str = DEFAULT_BEDROCK_MODEL_ID) -> None:
+    """Pre-flight: confirm the configured chat model is enabled in the target region.
+
+    Calls bedrock list-inference-profiles, checks that the requested model id
+    is present, and exits with a clean message if not. This catches the most
+    common new-user failure: chat deploys fine and 500s on the first message
+    because Bedrock model access wasn't approved in the chosen region.
+    """
+    try:
+        data = run_aws(
+            ["bedrock", "list-inference-profiles"],
+            profile=config["aws_profile"], region=config["region"],
+        )
+    except SystemExit:
+        # Bedrock might not be available at all in this region.
+        print(f"\nWARNING: could not query Bedrock in {config['region']}. "
+              f"Chat may fail. Continuing — non-chat features are unaffected.")
+        return
+    profiles = data.get("inferenceProfileSummaries", []) or []
+    ids = {p.get("inferenceProfileId", "") for p in profiles}
+    if model_id in ids:
+        print(f"Bedrock model OK: {model_id} available in {config['region']}.")
+        return
+
+    console_url = (
+        f"https://{config['region']}.console.aws.amazon.com/bedrock/home?"
+        f"region={config['region']}#/modelaccess"
+    )
+    sys.exit(
+        f"\nThe Bedrock model `{model_id}` is not available in {config['region']}.\n"
+        f"Enable model access in the AWS console:\n"
+        f"  {console_url}\n"
+        f"Then re-run `python3 tokenburner.py install`.\n"
+    )
+
+
 def cmd_install(args):
-    config = load_config(interactive=True)
+    config = load_config(
+        interactive=True,
+        profile_arg=getattr(args, "profile", None),
+        region_arg=getattr(args, "region", None),
+    )
     verify_account(config)
     requested = set(args.features or [f["name"] for f in load_features()])
     features = [f for f in load_features() if f["name"] in requested]
@@ -269,6 +360,11 @@ def cmd_install(args):
 
     print(f"\nInstalling tokenburner to account {config['account_id']} in {config['region']}.")
     print(f"Base stack + {len(features)} feature(s): {', '.join(f['name'] for f in features) or '(none)'}\n")
+
+    # Pre-flight: if chat is requested, verify Bedrock model access in the
+    # target region. Better to fail before a 6-minute CloudFront deploy.
+    if any(f["name"] == "chat" for f in features):
+        ensure_bedrock_model(config)
 
     ensure_cdk_bootstrap(config)
 
@@ -437,6 +533,8 @@ def main():
 
     install = sub.add_parser("install", help="Deploy the base stack + all features in features.yaml")
     install.add_argument("--features", nargs="+", help="Limit install to specific feature names")
+    install.add_argument("--profile", help="AWS profile to use (overrides AWS_PROFILE env)")
+    install.add_argument("--region", help="AWS region to deploy into (default: profile region or us-west-2)")
     install.set_defaults(func=cmd_install)
 
     status = sub.add_parser("status", help="Show deployed stacks + registered features")

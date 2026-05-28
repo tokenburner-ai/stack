@@ -30,12 +30,25 @@ Open the repo in any AI coding assistant that reads `CLAUDE.md`. It will:
 4. Deploy the base stack and each feature.
 5. Hand you a dashboard URL and an admin API key.
 
+A full install (4 features) takes about 25-35 minutes — most of that is
+CloudFront eventual consistency on each new distribution.
+
 If you'd rather run the CLI directly:
 
 ```bash
-pip install pyyaml
+# macOS (Homebrew Python): add --break-system-packages
+pip install pyyaml --break-system-packages
+# Or just: pip install pyyaml      (Linux, virtualenv, or any non-PEP668 env)
+
 python3 tokenburner.py install
+# optional: --profile <name>  --region us-east-1  --features drive chat
 ```
+
+The CLI seeds `.tokenburner.json` automatically from your AWS CLI config,
+auto-bootstraps CDK if the target region isn't ready, and runs a Bedrock
+pre-flight before deploying chat. If the configured model isn't enabled
+in your target region, the CLI prints the console URL to enable it and
+exits cleanly.
 
 ## What you get
 
@@ -108,6 +121,19 @@ conventions. The short version: one base stack provides shared infrastructure
 (API-key store, feature registry, dashboard CloudFront+Lambda, auto-minted
 bootstrap admin key), and each feature is an independent CDK stack that
 imports what it needs.
+
+## Contributing
+
+This repo ships a security-audit pre-push hook in `.githooks/`. To activate
+it in your clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook scans tracked files and outgoing commits for forbidden patterns
+(AWS account ids, AKIA keys, sk_ tokens, PEM private keys, personal emails,
+Co-Authored-By trailers) and aborts the push if anything matches.
 
 ## License
 
