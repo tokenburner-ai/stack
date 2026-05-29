@@ -13,7 +13,9 @@ so set expectations honestly up front.
 - **Mode:** always `dev_mode=true` on first install (~$1/mo). Full stack is
   a later upgrade.
 - **Bedrock model:** Haiku 4.5 for the chat feature unless the user asks for
-  a different one.
+  a different one. The CLI runs a Bedrock pre-flight before deploying chat
+  and will exit cleanly with a console URL if the model isn't enabled in
+  the user's region — see "When things go wrong" below for how to recover.
 
 ## The flow
 
@@ -131,14 +133,66 @@ installed:
 
 ## When things go wrong
 
+### Chat pre-flight: "The Bedrock model X is not available in Y"
+
+This is the most common new-user failure. AWS Bedrock requires explicit
+model access approval per region per account, and a brand-new account
+has nothing approved by default. The CLI catches this BEFORE deploying
+chat and exits with a message like:
+
+```
+The Bedrock model `us.anthropic.claude-haiku-4-5-20251001-v1:0` is not
+available in us-east-1.
+Enable model access in the AWS console:
+  https://us-east-1.console.aws.amazon.com/bedrock/home?region=us-east-1#/modelaccess
+Then re-run `python3 tokenburner.py install`.
+```
+
+Do this:
+
+1. **Tell the user honestly that approval may not be one-click.** Anthropic
+   models on a new AWS account often require filling out a short use-case
+   form. For Haiku 4.5 the approval is usually instant. For Opus models
+   it can take hours.
+2. **Walk them through the console.** Open the URL from the error message,
+   click "Modify model access" (or "Manage model access"), find the row
+   for **Claude Haiku 4.5** (matching the model id printed in the error —
+   it's the row labeled "Anthropic / Claude Haiku 4.5"), check the box,
+   submit any use-case form that appears, save.
+3. **After approval, re-deploy just chat — not the whole install.** The
+   base stack and other features are already up. Run:
+   ```bash
+   python3 tokenburner.py deploy chat
+   ```
+   This is idempotent and only takes ~6 minutes.
+4. **If the user wants to skip Bedrock entirely**, you can install
+   without chat:
+   ```bash
+   python3 tokenburner.py install --features drive forums agent
+   ```
+   They can add chat later by enabling the model and running
+   `python3 tokenburner.py deploy chat`.
+
+### Bedrock not available in the chosen region
+
+A few AWS regions don't offer Bedrock at all (some GovCloud and opt-in
+regions). The CLI prints a WARNING and continues — chat will deploy but
+return 500 on the first message. If this happens, suggest the user
+re-install in `us-east-1`, `us-west-2`, or another well-supported
+commercial region:
+
+```bash
+python3 tokenburner.py destroy
+python3 tokenburner.py install --region us-east-1
+```
+
+### Other gotchas
+
 - **CloudFront takes time.** If the dashboard returns 403 right after
   install, wait ~60 seconds and try again.
 - **DDB tables from a prior install** are RETAIN — if you destroy and
   reinstall, the new stack will collide. Delete the tables first:
   `aws dynamodb delete-table --table-name tokenburner-<name>`.
-- **Bedrock model not enabled.** If chat 500s with "AccessDeniedException",
-  the user needs to enable the model in the Bedrock console (one-click).
-  Surface that clearly.
 - **Stack bucket name collision.** S3 bucket names are globally unique.
   If `tokenburner-forums-<account>` already exists in a different account,
   the deploy will fail. Rename by editing forums/cdk/stack.py.
