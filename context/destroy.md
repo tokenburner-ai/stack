@@ -62,9 +62,26 @@ Resources NOT affected:
 
 Do NOT proceed without the exact word "destroy". This is irreversible.
 
+## Step 2b: Agent IAM cleanup (automatic in CLI)
+
+If the **agent** feature was installed, `python3 tokenburner.py destroy` now
+detaches `TierBasic` / `TierPro` policies from `/tokenburner-agent/` IAM users
+**before** destroying `tokenburner-agent`. Without this step, agent destroy
+fails with `Cannot delete a policy attached to entities` and blocks base stack
+deletion.
+
+See [docs/teardown-failures.md](../docs/teardown-failures.md) for details.
+
+Preferred full teardown:
+
+```bash
+printf 'destroy\n' | python3 tokenburner.py destroy --purge-retained
+```
+
 ## Step 3: Destroy Product Stack First
 
-Product stacks depend on base stack exports. Destroy them first.
+Product stacks depend on base stack exports. Destroy them first (or use
+`tokenburner destroy product` / full `destroy` which handles order).
 
 ```bash
 cd product-template/cdk
