@@ -94,7 +94,7 @@ python3 tokenburner.py install [--features a b c]   # base + features
 python3 tokenburner.py status                        # what's deployed
 python3 tokenburner.py deploy <feature>              # redeploy one
 python3 tokenburner.py destroy [feature]             # remove one or all
-python3 tokenburner.py destroy --purge-retained      # also delete RETAIN DDB tables
+python3 tokenburner.py destroy --purge-retained      # also delete RETAIN S3 + DDB
 python3 tokenburner.py domain <domain>               # attach a custom domain
 python3 tokenburner.py sso enable                    # Google OAuth setup
 ```

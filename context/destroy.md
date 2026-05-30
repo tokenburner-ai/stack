@@ -111,6 +111,21 @@ AWS_PROFILE=<profile> aws cloudformation describe-stacks --stack-name tokenburne
 
 ## Step 5: Clean Up Retained Resources
 
+Several resources use RETAIN and survive `cdk destroy`:
+
+- **S3 buckets** — e.g. `tokenburner-forums-<account>-<region>`, `tokendrive-files-...` (versioned; must delete all versions)
+- **DynamoDB** — e.g. `tokenburner-api-keys` (API keys table)
+
+With the fixed CLI:
+
+```bash
+printf 'destroy\n' | python3 tokenburner.py destroy --purge-retained
+```
+
+This empties and deletes matching S3 buckets, then deletes retained tables.
+
+### Manual: DynamoDB API keys table
+
 The DynamoDB API keys table has a RETAIN removal policy and survives `cdk destroy`.
 
 Check if it still exists:

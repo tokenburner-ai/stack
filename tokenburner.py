@@ -9,8 +9,8 @@ Subcommands
     destroy  [feature]   Tear down a single feature stack, or (without args) the
                          whole tokenburner stack after a confirmation prompt.
                          Before destroying agent, detaches tier IAM policies from
-                         per-account users. Use --purge-retained to delete DDB
-                         tables left behind by RETAIN removal policies.
+                         per-account users. Use --purge-retained to delete S3
+                         buckets and DDB tables left behind by RETAIN policies.
     domain   <domain>    Attach a custom domain to the dashboard (stubbed; prints
                          next-step instructions for now).
     sso      enable      Write Google OAuth credentials to Secrets Manager so
@@ -55,7 +55,13 @@ RETAINED_DDB_TABLES = (
     "tokenburner-feature-registry",
     "tokenburner-agent-accounts",
     "tokenburner-agent-context",
+    "tokenburner-chat",
+    "tokendrive-index",
 )
+
+# S3 buckets created with RemovalPolicy.RETAIN (or orphaned after failed destroy).
+# Drive uses the tokendrive-* prefix; other features use tokenburner-*.
+RETAINED_S3_BUCKET_PREFIXES = ("tokenburner-", "tokendrive-")
 
 LEGACY_CONTEXT_COMMANDS = {
     "deploy":       ("deploy.md",       "Deploy base + product stack, verify, present results"),
@@ -369,22 +375,122 @@ def cleanup_agent_iam_users(config: dict) -> int:
     return deleted
 
 
+def _aws_base(config: dict, service_region: bool = True) -> list[str]:
+    """aws CLI argv prefix for config profile (and region when needed)."""
+    cmd = ["aws", "--profile", config["aws_profile"]]
+    if service_region:
+        cmd += ["--region", config["region"]]
+    return cmd
+
+
+def _empty_s3_bucket(bucket: str, config: dict) -> None:
+    """Remove all objects, versions, and delete markers from a bucket."""
+    profile = config["aws_profile"]
+    while True:
+        out = subprocess.run(
+            ["aws", "s3api", "list-object-versions", "--bucket", bucket, "--profile", profile],
+            capture_output=True, text=True,
+        )
+        if out.returncode != 0:
+            break
+        data = json.loads(out.stdout or "{}")
+        objs = []
+        for v in data.get("Versions") or []:
+            objs.append({"Key": v["Key"], "VersionId": v["VersionId"]})
+        for m in data.get("DeleteMarkers") or []:
+            objs.append({"Key": m["Key"], "VersionId": m["VersionId"]})
+        if not objs:
+            break
+        for i in range(0, len(objs), 1000):
+            batch = {"Objects": objs[i : i + 1000], "Quiet": True}
+            subprocess.run(
+                ["aws", "s3api", "delete-objects", "--bucket", bucket,
+                 "--delete", json.dumps(batch), "--profile", profile],
+                check=True,
+            )
+    subprocess.run(
+        ["aws", "s3", "rm", f"s3://{bucket}", "--recursive", "--profile", profile],
+        capture_output=True,
+    )
+
+
+def _is_tokenburner_bucket(name: str, config: dict) -> bool:
+    if any(name.startswith(p) for p in RETAINED_S3_BUCKET_PREFIXES):
+        return True
+    tags = subprocess.run(
+        ["aws", "s3api", "get-bucket-tagging", "--bucket", name,
+         "--profile", config["aws_profile"]],
+        capture_output=True, text=True,
+    )
+    if tags.returncode != 0:
+        return False
+    try:
+        tagset = json.loads(tags.stdout).get("TagSet", [])
+    except json.JSONDecodeError:
+        return False
+    return any(t.get("Key") == "ManagedBy" and t.get("Value") == "tokenburner" for t in tagset)
+
+
+def list_retained_s3_buckets(config: dict) -> list[str]:
+    """Buckets left after CDK destroy (RETAIN policy or orphaned)."""
+    out = subprocess.run(
+        ["aws", "s3", "ls", "--profile", config["aws_profile"]],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        sys.exit(f"Could not list S3 buckets: {out.stderr.strip()}")
+    names = []
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            name = parts[2]
+            if _is_tokenburner_bucket(name, config):
+                names.append(name)
+    return sorted(set(names))
+
+
+def delete_s3_bucket(bucket: str, config: dict) -> None:
+    """Empty a bucket (including versioned objects) and delete it."""
+    print(f"  deleting S3 bucket {bucket}")
+    _empty_s3_bucket(bucket, config)
+    result = subprocess.run(
+        ["aws", "s3", "rb", f"s3://{bucket}", "--profile", config["aws_profile"]],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        sys.exit(f"Could not delete bucket {bucket}: {result.stderr.strip() or result.stdout.strip()}")
+
+
+def purge_retained_s3_buckets(config: dict) -> None:
+    """Delete S3 buckets that CDK retained after stack destroy."""
+    buckets = list_retained_s3_buckets(config)
+    if not buckets:
+        print("  (no retained tokenburner S3 buckets)")
+        return
+    for bucket in buckets:
+        delete_s3_bucket(bucket, config)
+
+
 def purge_retained_tables(config: dict) -> None:
     """Delete DynamoDB tables that CDK retained after stack destroy."""
     for table in RETAINED_DDB_TABLES:
         desc = subprocess.run(
-            ["aws", "--profile", config["aws_profile"], "--region", config["region"],
-             "dynamodb", "describe-table", "--table-name", table],
+            [*_aws_base(config), "dynamodb", "describe-table", "--table-name", table],
             capture_output=True, text=True,
         )
         if desc.returncode != 0:
             continue
         print(f"  deleting retained table {table}")
         subprocess.run(
-            ["aws", "--profile", config["aws_profile"], "--region", config["region"],
-             "dynamodb", "delete-table", "--table-name", table],
+            [*_aws_base(config), "dynamodb", "delete-table", "--table-name", table],
             check=True,
         )
+
+
+def purge_retained_resources(config: dict) -> None:
+    """Delete RETAIN DynamoDB tables and S3 buckets after stack destroy."""
+    purge_retained_s3_buckets(config)
+    purge_retained_tables(config)
 
 
 def destroy_stack(
@@ -680,14 +786,14 @@ def cmd_destroy(args):
             if not destroy_one_feature(feature):
                 sys.exit(f"destroy failed for feature {args.feature}")
         if purge:
-            print("\n→ deleting retained DynamoDB tables")
-            purge_retained_tables(config)
+            print("\n→ deleting retained S3 buckets and DynamoDB tables")
+            purge_retained_resources(config)
         return
 
     # Destroy everything — product, features, base.
     confirm = input(
         "This will destroy all tokenburner stacks"
-        + (" and retained DynamoDB tables" if purge else "")
+        + (" and retained S3 buckets + DynamoDB tables" if purge else "")
         + ". Type 'destroy' to confirm: "
     ).strip()
     if confirm != "destroy":
@@ -711,8 +817,8 @@ def cmd_destroy(args):
         failed.append("base")
 
     if purge:
-        print("\n→ deleting retained DynamoDB tables")
-        purge_retained_tables(config)
+        print("\n→ deleting retained S3 buckets and DynamoDB tables")
+        purge_retained_resources(config)
 
     if os.path.exists(CREDS_FILE):
         os.remove(CREDS_FILE)
@@ -800,7 +906,7 @@ def main():
     destroy.add_argument(
         "--purge-retained",
         action="store_true",
-        help="After stacks are gone, delete RETAIN DynamoDB tables (api-keys, registry, agent tables)",
+        help="After stacks are gone, delete RETAIN S3 buckets (forums, drive, etc.) and DynamoDB tables",
     )
     destroy.set_defaults(func=cmd_destroy)
 

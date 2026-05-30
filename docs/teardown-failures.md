@@ -18,7 +18,11 @@ Delete canceled. Cannot delete export tokenburner-api-keys-table-name
 as it is in use by tokenburner-agent.
 ```
 
-### 3. Retained DynamoDB tables after “successful” destroy
+### 3. Retained S3 buckets after “successful” destroy
+
+Feature stacks such as **forums** and **drive** set `RemovalPolicy.RETAIN` on their S3 buckets. After `cdk destroy`, buckets like `tokenburner-forums-<account>-<region>` or `tokendrive-files-<account>-<region>` remain. Versioned buckets need all object versions deleted before `aws s3 rb` succeeds.
+
+### 4. Retained DynamoDB tables after “successful” destroy
 
 Stacks are gone in CloudFormation, but tables such as `tokenburner-api-keys` still exist and block a clean redeploy.
 
@@ -55,7 +59,7 @@ As of the teardown fix PR, `tokenburner destroy` handles the common case automat
 | Agent pre-destroy | Detach tier policies, delete access keys, delete `/tokenburner-agent/` users |
 | Feature stacks | `cdk destroy` with retry + CloudFormation fallback on `DELETE_FAILED` |
 | Base stack | `cdk destroy -c dev_mode=true` after all features are gone |
-| `--purge-retained` | Deletes retained DynamoDB tables and removes `~/.tokenburner/credentials` |
+| `--purge-retained` | Empties and deletes retained S3 buckets (`tokenburner-*`, `tokendrive-*`, or `ManagedBy=tokenburner` tag), deletes retained DynamoDB tables, removes `~/.tokenburner/credentials` |
 
 ### Full clean teardown
 
@@ -101,7 +105,11 @@ python3 tokenburner.py destroy product
    ```bash
    cd base-stack/cdk && cdk destroy tokenburner-base --force -c dev_mode=true
    ```
-5. Optionally delete retained tables (see `RETAINED_DDB_TABLES` in `tokenburner.py`).
+5. Optionally delete retained buckets and tables:
+   ```bash
+   python3 tokenburner.py destroy --purge-retained
+   ```
+   Or manually empty versioned S3 objects then `aws s3 rb s3://tokenburner-forums-...`.
 
 ---
 
@@ -120,7 +128,7 @@ This is common when using account root or a user that does not assume the CDK de
 
 ## Related files
 
-- `tokenburner.py` — `cleanup_agent_iam_users`, `destroy_stack`, `purge_retained_tables`
+- `tokenburner.py` — `cleanup_agent_iam_users`, `destroy_stack`, `purge_retained_resources`, `delete_s3_bucket`
 - `features/agent/cdk/stack.py` — `TierBasic` / `TierPro` policies
 - `features/agent/app/admin_api.py` — creates users and attaches policies
 - `context/destroy.md` — AI assistant playbook for destroy
