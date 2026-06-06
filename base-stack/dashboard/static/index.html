@@ -250,7 +250,7 @@
   <div class="ai-impact" id="ai-impact" hidden>
     <span class="ai-label">AI Stability Index</span>
     <div class="ai-chips" id="ai-chips"></div>
-    <a class="ai-link" href="https://d3puq3d7q1u82y.cloudfront.net/clock" target="_blank" rel="noopener">View full clock →</a>
+    <a class="ai-link" href="https://tokenburner.ai/clock" target="_blank" rel="noopener">View full clock →</a>
   </div>
 
   <footer>
@@ -375,7 +375,7 @@ init();
 
 // AI Stability Index widget — loads from tokenburner.ai clock API
 (function loadCascade() {
-  const CLOCK_API = 'https://d3puq3d7q1u82y.cloudfront.net/api/cascade';
+  const CLOCK_API = 'https://tokenburner.ai/api/cascade';
   fetch(CLOCK_API)
     .then(r => r.ok ? r.json() : null)
     .catch(() => null)
@@ -390,7 +390,7 @@ init();
       if (fin) {
         const a = document.createElement('a');
         a.className = 'ai-chip ' + cls(fin.bearing);
-        a.href = 'https://d3puq3d7q1u82y.cloudfront.net/clock';
+        a.href = 'https://tokenburner.ai/clock';
         a.target = '_blank'; a.rel = 'noopener';
         a.innerHTML = `<span class="dot"></span>Financial ${sign(fin.bearing)}${fin.bearing}`;
         chips.appendChild(a);
@@ -398,7 +398,7 @@ init();
       if (soc) {
         const a = document.createElement('a');
         a.className = 'ai-chip ' + cls(soc.bearing);
-        a.href = 'https://d3puq3d7q1u82y.cloudfront.net/clock';
+        a.href = 'https://tokenburner.ai/clock';
         a.target = '_blank'; a.rel = 'noopener';
         a.innerHTML = `<span class="dot"></span>Social ${sign(soc.bearing)}${soc.bearing}`;
         chips.appendChild(a);
