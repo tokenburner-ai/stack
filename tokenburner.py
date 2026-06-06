@@ -117,7 +117,12 @@ def load_config(
 ) -> dict:
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE) as f:
-            return json.load(f)
+            cfg = json.load(f)
+        if profile_arg:
+            cfg["aws_profile"] = profile_arg
+        if region_arg:
+            cfg["region"] = region_arg
+        return cfg
     if not interactive:
         sys.exit(f"No config at {CONFIG_FILE}. Run `tokenburner install` first.")
 
