@@ -8,6 +8,9 @@ Subcommands
     deploy   <feature>   Deploy (or redeploy) a single feature by name, or 'base'.
     destroy  [feature]   Tear down a single feature stack, or (without args) the
                          whole tokenburner stack after a confirmation prompt.
+                         Before destroying agent, detaches tier IAM policies from
+                         per-account users. Use --purge-retained to delete S3
+                         buckets and DDB tables left behind by RETAIN policies.
     domain   <domain>    Attach a custom domain to the dashboard (stubbed; prints
                          next-step instructions for now).
     sso      enable      Write Google OAuth credentials to Secrets Manager so
@@ -43,6 +46,22 @@ FEATURES_DIR = os.path.join(HERE, "features")
 CREDS_FILE = os.path.join(pathlib.Path.home(), ".tokenburner", "credentials")
 BASE_STACK_DIR = os.path.join(HERE, "base-stack", "cdk")
 BASE_STACK_NAME = "tokenburner-base"
+PRODUCT_CDK_DIR = os.path.join(HERE, "product-template", "cdk")
+AGENT_IAM_PATH = "/tokenburner-agent/"
+
+# DynamoDB tables that use RemovalPolicy.RETAIN in CDK; survive stack destroy.
+RETAINED_DDB_TABLES = (
+    "tokenburner-api-keys",
+    "tokenburner-feature-registry",
+    "tokenburner-agent-accounts",
+    "tokenburner-agent-context",
+    "tokenburner-chat",
+    "tokendrive-index",
+)
+
+# S3 buckets created with RemovalPolicy.RETAIN (or orphaned after failed destroy).
+# Drive uses the tokendrive-* prefix; other features use tokenburner-*.
+RETAINED_S3_BUCKET_PREFIXES = ("tokenburner-", "tokendrive-")
 
 LEGACY_CONTEXT_COMMANDS = {
     "deploy":       ("deploy.md",       "Deploy base + product stack, verify, present results"),
@@ -230,14 +249,303 @@ def cdk_deploy(cdk_dir: str, stack_name: str | None, config: dict, context: dict
         sys.exit(f"cdk deploy failed for {stack_name or cdk_dir}")
 
 
-def cdk_destroy(cdk_dir: str, stack_name: str, config: dict) -> None:
+def cdk_destroy(
+    cdk_dir: str,
+    stack_name: str,
+    config: dict,
+    context: dict | None = None,
+) -> bool:
+    """Run cdk destroy. Returns True on success."""
+    args = _cdk_cmd() + ["destroy", stack_name, "--force"]
+    for k, v in (context or {}).items():
+        args += ["-c", f"{k}={v}"]
     print(f"\n→ cdk destroy {stack_name}  (in {cdk_dir})  region={config['region']}")
+    result = subprocess.run(args, cwd=cdk_dir, env=_cdk_env(config))
+    return result.returncode == 0
+
+
+def stack_status(stack_name: str, config: dict) -> str | None:
+    """Return CloudFormation stack status, or None if the stack does not exist."""
+    cmd = [
+        "cloudformation", "describe-stacks", "--stack-name", stack_name,
+        "--query", "Stacks[0].StackStatus", "--output", "text",
+    ]
     result = subprocess.run(
-        _cdk_cmd() + ["destroy", stack_name, "--force"],
-        cwd=cdk_dir, env=_cdk_env(config),
+        ["aws", "--profile", config["aws_profile"], "--region", config["region"], *cmd],
+        capture_output=True, text=True,
     )
     if result.returncode != 0:
-        sys.exit(f"cdk destroy failed for {stack_name}")
+        return None
+    return result.stdout.strip() or None
+
+
+def cfn_delete_stack(stack_name: str, config: dict, wait: bool = True) -> None:
+    """Start (and optionally wait for) a CloudFormation stack deletion."""
+    profile, region = config["aws_profile"], config["region"]
+    base = ["aws", "--profile", profile, "--region", region, "cloudformation"]
+    subprocess.run([*base, "delete-stack", "--stack-name", stack_name], check=True)
+    if wait:
+        subprocess.run([*base, "wait", "stack-delete-complete", "--stack-name", stack_name], check=False)
+
+
+def _agent_tier_policy_arns(config: dict) -> list[str]:
+    """ARNs of agent tier managed policies for this region (may be empty if never deployed)."""
+    region = config["region"]
+    names = (
+        f"tokenburner-agent-tier-basic-{region}",
+        f"tokenburner-agent-tier-pro-{region}",
+    )
+    arns: list[str] = []
+    for name in names:
+        out = subprocess.run(
+            [
+                "aws", "--profile", config["aws_profile"],
+                "iam", "list-policies", "--scope", "Local",
+                "--query", f"Policies[?PolicyName=='{name}'].Arn",
+                "--output", "text",
+            ],
+            capture_output=True, text=True,
+        )
+        if out.returncode == 0 and out.stdout.strip() and out.stdout.strip() != "None":
+            arns.append(out.stdout.strip())
+    return arns
+
+
+def cleanup_agent_iam_users(config: dict) -> int:
+    """Detach tier policies and delete IAM users created by the agent admin API.
+
+    The agent stack creates managed policies (TierBasic/TierPro) and attaches them
+    to per-account users. CloudFormation cannot delete those policies while they are
+    still attached, which leaves tokenburner-agent in DELETE_FAILED and blocks base
+    stack teardown (export still in use).
+    """
+    profile = config["aws_profile"]
+    tier_arns = _agent_tier_policy_arns(config)
+    seen: set[str] = set()
+    users: list[str] = []
+
+    for cmd in (
+        ["iam", "list-users", "--path-prefix", AGENT_IAM_PATH, "--query", "Users[].UserName", "--output", "text"],
+        ["iam", "list-users", "--query", "Users[?starts_with(UserName, `tokenburner-agent-`)].UserName", "--output", "text"],
+    ):
+        out = subprocess.run(
+            ["aws", "--profile", profile, *cmd],
+            capture_output=True, text=True,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            for name in out.stdout.split():
+                if name and name not in seen:
+                    seen.add(name)
+                    users.append(name)
+
+    if not users:
+        print("  (no tokenburner-agent IAM users to clean up)")
+        return 0
+
+    deleted = 0
+    for user in users:
+        print(f"  cleaning IAM user {user}")
+        for arn in tier_arns:
+            subprocess.run(
+                ["aws", "--profile", profile, "iam", "detach-user-policy",
+                 "--user-name", user, "--policy-arn", arn],
+                capture_output=True,
+            )
+        keys_out = subprocess.run(
+            ["aws", "--profile", profile, "iam", "list-access-keys", "--user-name", user,
+             "--query", "AccessKeyMetadata[].AccessKeyId", "--output", "text"],
+            capture_output=True, text=True,
+        )
+        if keys_out.returncode == 0:
+            for key_id in keys_out.stdout.split():
+                if key_id:
+                    subprocess.run(
+                        ["aws", "--profile", profile, "iam", "delete-access-key",
+                         "--user-name", user, "--access-key-id", key_id],
+                        capture_output=True,
+                    )
+        rm = subprocess.run(
+            ["aws", "--profile", profile, "iam", "delete-user", "--user-name", user],
+            capture_output=True, text=True,
+        )
+        if rm.returncode == 0:
+            deleted += 1
+        else:
+            print(f"  ! could not delete user {user}: {rm.stderr.strip() or rm.stdout.strip()}")
+    return deleted
+
+
+def _aws_base(config: dict, service_region: bool = True) -> list[str]:
+    """aws CLI argv prefix for config profile (and region when needed)."""
+    cmd = ["aws", "--profile", config["aws_profile"]]
+    if service_region:
+        cmd += ["--region", config["region"]]
+    return cmd
+
+
+def _empty_s3_bucket(bucket: str, config: dict) -> None:
+    """Remove all objects, versions, and delete markers from a bucket."""
+    profile = config["aws_profile"]
+    while True:
+        out = subprocess.run(
+            ["aws", "s3api", "list-object-versions", "--bucket", bucket, "--profile", profile],
+            capture_output=True, text=True,
+        )
+        if out.returncode != 0:
+            break
+        data = json.loads(out.stdout or "{}")
+        objs = []
+        for v in data.get("Versions") or []:
+            objs.append({"Key": v["Key"], "VersionId": v["VersionId"]})
+        for m in data.get("DeleteMarkers") or []:
+            objs.append({"Key": m["Key"], "VersionId": m["VersionId"]})
+        if not objs:
+            break
+        for i in range(0, len(objs), 1000):
+            batch = {"Objects": objs[i : i + 1000], "Quiet": True}
+            subprocess.run(
+                ["aws", "s3api", "delete-objects", "--bucket", bucket,
+                 "--delete", json.dumps(batch), "--profile", profile],
+                check=True,
+            )
+    subprocess.run(
+        ["aws", "s3", "rm", f"s3://{bucket}", "--recursive", "--profile", profile],
+        capture_output=True,
+    )
+
+
+def _is_tokenburner_bucket(name: str, config: dict) -> bool:
+    if any(name.startswith(p) for p in RETAINED_S3_BUCKET_PREFIXES):
+        return True
+    tags = subprocess.run(
+        ["aws", "s3api", "get-bucket-tagging", "--bucket", name,
+         "--profile", config["aws_profile"]],
+        capture_output=True, text=True,
+    )
+    if tags.returncode != 0:
+        return False
+    try:
+        tagset = json.loads(tags.stdout).get("TagSet", [])
+    except json.JSONDecodeError:
+        return False
+    return any(t.get("Key") == "ManagedBy" and t.get("Value") == "tokenburner" for t in tagset)
+
+
+def list_retained_s3_buckets(config: dict) -> list[str]:
+    """Buckets left after CDK destroy (RETAIN policy or orphaned)."""
+    out = subprocess.run(
+        ["aws", "s3", "ls", "--profile", config["aws_profile"]],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        sys.exit(f"Could not list S3 buckets: {out.stderr.strip()}")
+    names = []
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            name = parts[2]
+            if _is_tokenburner_bucket(name, config):
+                names.append(name)
+    return sorted(set(names))
+
+
+def delete_s3_bucket(bucket: str, config: dict) -> None:
+    """Empty a bucket (including versioned objects) and delete it."""
+    print(f"  deleting S3 bucket {bucket}")
+    _empty_s3_bucket(bucket, config)
+    result = subprocess.run(
+        ["aws", "s3", "rb", f"s3://{bucket}", "--profile", config["aws_profile"]],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        sys.exit(f"Could not delete bucket {bucket}: {result.stderr.strip() or result.stdout.strip()}")
+
+
+def purge_retained_s3_buckets(config: dict) -> None:
+    """Delete S3 buckets that CDK retained after stack destroy."""
+    buckets = list_retained_s3_buckets(config)
+    if not buckets:
+        print("  (no retained tokenburner S3 buckets)")
+        return
+    for bucket in buckets:
+        delete_s3_bucket(bucket, config)
+
+
+def purge_retained_tables(config: dict) -> None:
+    """Delete DynamoDB tables that CDK retained after stack destroy."""
+    for table in RETAINED_DDB_TABLES:
+        desc = subprocess.run(
+            [*_aws_base(config), "dynamodb", "describe-table", "--table-name", table],
+            capture_output=True, text=True,
+        )
+        if desc.returncode != 0:
+            continue
+        print(f"  deleting retained table {table}")
+        subprocess.run(
+            [*_aws_base(config), "dynamodb", "delete-table", "--table-name", table],
+            check=True,
+        )
+
+
+def purge_retained_resources(config: dict) -> None:
+    """Delete RETAIN DynamoDB tables and S3 buckets after stack destroy."""
+    purge_retained_s3_buckets(config)
+    purge_retained_tables(config)
+
+
+def destroy_stack(
+    cdk_dir: str,
+    stack_name: str,
+    config: dict,
+    *,
+    context: dict | None = None,
+    pre_destroy=None,
+) -> bool:
+    """Destroy one CDK stack, with optional pre-hook and retry for DELETE_FAILED."""
+    if pre_destroy:
+        pre_destroy(config)
+    status = stack_status(stack_name, config)
+    if status is None:
+        print(f"  {stack_name}: not deployed, skipping")
+        return True
+    if status == "DELETE_FAILED":
+        print(f"  {stack_name}: previous delete failed — retrying after cleanup")
+        if pre_destroy:
+            pre_destroy(config)
+        cfn_delete_stack(stack_name, config, wait=True)
+        return stack_status(stack_name, config) is None
+    if not os.path.isdir(cdk_dir):
+        print(f"  {stack_name}: {cdk_dir} missing — using CloudFormation delete-stack")
+        cfn_delete_stack(stack_name, config, wait=True)
+        return stack_status(stack_name, config) is None
+    if cdk_destroy(cdk_dir, stack_name, config, context=context):
+        return True
+    # One retry (e.g. agent IAM policies still attached).
+    if pre_destroy:
+        print(f"  {stack_name}: destroy failed, running pre-destroy cleanup and retrying")
+        pre_destroy(config)
+        if cdk_destroy(cdk_dir, stack_name, config, context=context):
+            return True
+    status = stack_status(stack_name, config)
+    if status in ("DELETE_FAILED", "UPDATE_COMPLETE", "CREATE_COMPLETE"):
+        print(f"  {stack_name}: falling back to CloudFormation delete-stack")
+        cfn_delete_stack(stack_name, config, wait=True)
+        return stack_status(stack_name, config) is None
+    return False
+
+
+def destroy_product_stack(config: dict) -> bool:
+    """Destroy product-template stack if it exists."""
+    product = config.get("product_name", "demo")
+    stack_name = f"tokenburner-{product}"
+    if not os.path.isdir(PRODUCT_CDK_DIR):
+        return True
+    return destroy_stack(
+        PRODUCT_CDK_DIR,
+        stack_name,
+        config,
+        context={"dev_mode": "true", "product_name": product},
+    )
 
 
 def cfn_outputs(stack_name: str, config: dict) -> dict:
@@ -449,30 +757,76 @@ def cmd_deploy(args):
     cdk_deploy(cdk_dir, feature["stack_name"], config)
 
 
+def _agent_pre_destroy(config: dict) -> None:
+    cleanup_agent_iam_users(config)
+
+
 def cmd_destroy(args):
     config = load_config(interactive=False)
     verify_account(config)
-    if args.feature:
-        feature = find_feature(args.feature)
+    purge = getattr(args, "purge_retained", False)
+
+    def destroy_one_feature(feature: dict) -> bool:
         dest = resolve_feature_dir(feature) if feature.get("path") else os.path.join(FEATURES_DIR, feature["name"])
         cdk_dir = os.path.join(dest, feature.get("cdk_dir", "cdk"))
-        if not os.path.isdir(cdk_dir):
-            sys.exit(f"{cdk_dir} missing — cannot destroy. Clone the feature first or destroy it via the AWS console.")
-        cdk_destroy(cdk_dir, feature["stack_name"], config)
+        pre = _agent_pre_destroy if feature["name"] == "agent" else None
+        if feature["name"] == "agent":
+            print("\n→ agent pre-destroy: detach tier policies and remove IAM users")
+        ok = destroy_stack(cdk_dir, feature["stack_name"], config, pre_destroy=pre)
+        if not ok:
+            print(f"  ! {feature['name']} destroy failed")
+        return ok
+
+    if args.feature:
+        if args.feature == "product":
+            if not destroy_product_stack(config):
+                sys.exit("product stack destroy failed")
+        else:
+            feature = find_feature(args.feature)
+            if not destroy_one_feature(feature):
+                sys.exit(f"destroy failed for feature {args.feature}")
+        if purge:
+            print("\n→ deleting retained S3 buckets and DynamoDB tables")
+            purge_retained_resources(config)
         return
-    # Destroy everything — base + all features.
-    confirm = input("This will destroy the base stack AND all feature stacks. Type 'destroy' to confirm: ").strip()
+
+    # Destroy everything — product, features, base.
+    confirm = input(
+        "This will destroy all tokenburner stacks"
+        + (" and retained S3 buckets + DynamoDB tables" if purge else "")
+        + ". Type 'destroy' to confirm: "
+    ).strip()
     if confirm != "destroy":
         sys.exit("Aborted.")
+
+    print("\n→ destroying product stack (if deployed)")
+    destroy_product_stack(config)
+
+    failed: list[str] = []
     for feature in load_features():
-        dest = resolve_feature_dir(feature) if feature.get("path") else os.path.join(FEATURES_DIR, feature["name"])
-        cdk_dir = os.path.join(dest, feature.get("cdk_dir", "cdk"))
-        if os.path.isdir(cdk_dir):
-            try:
-                cdk_destroy(cdk_dir, feature["stack_name"], config)
-            except SystemExit as e:
-                print(f"  ! {feature['name']} destroy failed: {e}")
-    cdk_destroy(BASE_STACK_DIR, BASE_STACK_NAME, config)
+        if not destroy_one_feature(feature):
+            failed.append(feature["name"])
+
+    print("\n→ destroying base stack")
+    if not destroy_stack(
+        BASE_STACK_DIR,
+        BASE_STACK_NAME,
+        config,
+        context={"dev_mode": "true"},
+    ):
+        failed.append("base")
+
+    if purge:
+        print("\n→ deleting retained S3 buckets and DynamoDB tables")
+        purge_retained_resources(config)
+
+    if os.path.exists(CREDS_FILE):
+        os.remove(CREDS_FILE)
+        print(f"  removed cached credentials at {CREDS_FILE}")
+
+    if failed:
+        sys.exit(f"destroy incomplete for: {', '.join(failed)}")
+    print("\nAll tokenburner stacks destroyed.")
 
 
 def cmd_domain(args):
@@ -545,7 +899,15 @@ def main():
     deploy.set_defaults(func=cmd_deploy)
 
     destroy = sub.add_parser("destroy", help="Destroy one feature, or everything with no args")
-    destroy.add_argument("feature", nargs="?", help="Feature name (omit to destroy all)")
+    destroy.add_argument(
+        "feature", nargs="?",
+        help="Feature name, 'product', or omit to destroy all",
+    )
+    destroy.add_argument(
+        "--purge-retained",
+        action="store_true",
+        help="After stacks are gone, delete RETAIN S3 buckets (forums, drive, etc.) and DynamoDB tables",
+    )
     destroy.set_defaults(func=cmd_destroy)
 
     domain = sub.add_parser("domain", help="Attach a custom domain to the dashboard")

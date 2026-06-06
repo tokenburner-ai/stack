@@ -671,7 +671,7 @@ python3 tokenburner.py <command>
 | `install [--features a b]` | Deploy base stack, clone + deploy every feature in `features.yaml` |
 | `status` | Show deployed stacks, dashboard URL, registered features |
 | `deploy <feature\|base>` | Redeploy a single feature (or the base stack) |
-| `destroy [feature]` | Tear down one feature, or (with no args) everything after a confirm |
+| `destroy [feature]` | Tear down one feature, or (with no args) everything after a confirm. Agent: pre-cleans IAM users. `--purge-retained` deletes RETAIN DDB tables. See [docs/teardown-failures.md](docs/teardown-failures.md). |
 | `domain <domain>` | Attach a custom domain to the dashboard (prints CDK instructions for now) |
 | `sso enable` | Write Google OAuth credentials to Secrets Manager |
 | `context <name>` | Legacy: print a context markdown file for AI-driven workflows |
@@ -706,9 +706,9 @@ python3 tokenburner.py status
 # Redeploy one feature after code changes
 python3 tokenburner.py deploy drive
 
-# Tear down one feature, or everything
+# Tear down one feature, or everything (agent IAM cleanup is automatic)
 python3 tokenburner.py destroy drive
-python3 tokenburner.py destroy
+printf 'destroy\n' | python3 tokenburner.py destroy --purge-retained
 ```
 
 ### Deploy a Product Update
