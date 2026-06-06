@@ -20,6 +20,7 @@ You need an AWS account and the AWS CLI configured (`aws configure`). Then:
 ```bash
 git clone https://github.com/tokenburner-ai/stack.git
 cd stack
+git config core.hooksPath .githooks   # enable pre-push security audit
 ```
 
 Open the repo in any AI coding assistant that reads `CLAUDE.md`. It will:
