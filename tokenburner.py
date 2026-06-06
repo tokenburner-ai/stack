@@ -762,7 +762,11 @@ def _agent_pre_destroy(config: dict) -> None:
 
 
 def cmd_destroy(args):
-    config = load_config(interactive=False)
+    config = load_config(
+        interactive=False,
+        profile_arg=getattr(args, "profile", None),
+        region_arg=getattr(args, "region", None),
+    )
     verify_account(config)
     purge = getattr(args, "purge_retained", False)
 
@@ -908,6 +912,8 @@ def main():
         action="store_true",
         help="After stacks are gone, delete RETAIN S3 buckets (forums, drive, etc.) and DynamoDB tables",
     )
+    destroy.add_argument("--profile", help="AWS profile to use (overrides AWS_PROFILE env and saved config)")
+    destroy.add_argument("--region", help="AWS region to target (overrides saved config)")
     destroy.set_defaults(func=cmd_destroy)
 
     domain = sub.add_parser("domain", help="Attach a custom domain to the dashboard")
