@@ -168,9 +168,50 @@
     border-radius: 4px;
   }
 
+  .ai-impact {
+    max-width: 1100px;
+    margin: 2.5rem auto 0;
+    background: #0c0c12;
+    border: 1px solid #23232e;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .ai-impact .ai-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .ai-impact .ai-chips { display: flex; gap: 0.5rem; align-items: center; }
+  .ai-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.78rem; font-weight: 700;
+    padding: 0.28rem 0.65rem; border-radius: 5px;
+    text-decoration: none; border: 1px solid transparent;
+    transition: opacity .15s; white-space: nowrap;
+  }
+  .ai-chip .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .ai-chip.pos { color:#4ade80; border-color:rgba(74,222,128,.25); background:rgba(74,222,128,.07); }
+  .ai-chip.pos .dot { background:#4ade80; }
+  .ai-chip.neu { color:#fbbf24; border-color:rgba(251,191,36,.25); background:rgba(251,191,36,.07); }
+  .ai-chip.neu .dot { background:#fbbf24; }
+  .ai-chip.neg { color:#f87171; border-color:rgba(248,113,113,.25); background:rgba(248,113,113,.07); }
+  .ai-chip.neg .dot { background:#f87171; }
+  .ai-chip:hover { opacity: .75; }
+  .ai-impact .ai-link {
+    font-size: 0.78rem; color: #f97316; text-decoration: none;
+  }
+  .ai-impact .ai-link:hover { color: #fbbf24; }
+
   footer {
     max-width: 1100px;
-    margin: 3rem auto 0;
+    margin: 1.5rem auto 0;
     color: #555;
     font-size: 0.8rem;
     text-align: center;
@@ -205,6 +246,12 @@
     <p class="intro">Installed features in this stack. Each card links to its own API docs and health status.</p>
     <div id="cards" class="cards"></div>
   </main>
+
+  <div class="ai-impact" id="ai-impact" hidden>
+    <span class="ai-label">AI Stability Index</span>
+    <div class="ai-chips" id="ai-chips"></div>
+    <a class="ai-link" href="https://d3puq3d7q1u82y.cloudfront.net/clock" target="_blank" rel="noopener">View full clock →</a>
+  </div>
 
   <footer>
     <a href="https://github.com/tokenburner-ai">tokenburner-ai</a> · self-hosted on your AWS account
@@ -325,6 +372,40 @@ document.getElementById("logout").addEventListener("click", () => {
 });
 
 init();
+
+// AI Stability Index widget — loads from tokenburner.ai clock API
+(function loadCascade() {
+  const CLOCK_API = 'https://d3puq3d7q1u82y.cloudfront.net/api/cascade';
+  fetch(CLOCK_API)
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null)
+    .then(data => {
+      if (!data) return;
+      const fin = data.financial;
+      const soc = data.social;
+      if (!fin && !soc) return;
+      const cls = b => b > 15 ? 'pos' : b < -15 ? 'neg' : 'neu';
+      const sign = b => b >= 0 ? '+' : '';
+      const chips = document.getElementById('ai-chips');
+      if (fin) {
+        const a = document.createElement('a');
+        a.className = 'ai-chip ' + cls(fin.bearing);
+        a.href = 'https://d3puq3d7q1u82y.cloudfront.net/clock';
+        a.target = '_blank'; a.rel = 'noopener';
+        a.innerHTML = `<span class="dot"></span>Financial ${sign(fin.bearing)}${fin.bearing}`;
+        chips.appendChild(a);
+      }
+      if (soc) {
+        const a = document.createElement('a');
+        a.className = 'ai-chip ' + cls(soc.bearing);
+        a.href = 'https://d3puq3d7q1u82y.cloudfront.net/clock';
+        a.target = '_blank'; a.rel = 'noopener';
+        a.innerHTML = `<span class="dot"></span>Social ${sign(soc.bearing)}${soc.bearing}`;
+        chips.appendChild(a);
+      }
+      document.getElementById('ai-impact').hidden = false;
+    });
+})();
 </script>
 
 </body>
