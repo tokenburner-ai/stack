@@ -30,12 +30,20 @@ python3 --version
 docker --version
 npx cdk --version || npm install -g aws-cdk
 python3 -c "import yaml" 2>/dev/null || pip install pyyaml --break-system-packages
+python3 -c "import aws_cdk" 2>/dev/null || pip install aws-cdk-lib constructs --break-system-packages
 ```
 
 If Docker isn't running, instruct the user to start it. CDK bundling needs it.
 
 The `--break-system-packages` flag is required on stock macOS Python 3.12+
 (Homebrew's PEP 668 protection). On Linux or virtualenv it's a no-op.
+
+The `aws-cdk-lib` / `constructs` packages are the Python CDK runtime: every
+`cdk.json` runs `python3 app.py`, so they must be importable or the first
+`cdk deploy` fails at synth with `ModuleNotFoundError: No module named
+'aws_cdk'`. `python3 tokenburner.py install` installs each stack's
+`cdk/requirements.txt` automatically, so this is only needed if you invoke
+`cdk` by hand.
 
 ### Step 2 — Verify AWS credentials
 

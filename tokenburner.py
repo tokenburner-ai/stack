@@ -254,6 +254,36 @@ def cdk_deploy(cdk_dir: str, stack_name: str | None, config: dict, context: dict
         sys.exit(f"cdk deploy failed for {stack_name or cdk_dir}")
 
 
+def pip_install_cdk_deps(cdk_dir: str) -> None:
+    """Install a CDK app's Python runtime deps before its first synth.
+
+    Every cdk.json runs `"app": "python3 app.py"`, so aws-cdk-lib / constructs
+    must be importable by the interpreter that runs app.py or `cdk deploy` dies
+    at synth with `ModuleNotFoundError: No module named 'aws_cdk'`. Nothing in a
+    fresh clone installs them, so install each stack's cdk/requirements.txt into
+    this interpreter before deploying. Retries with --break-system-packages to
+    clear the PEP 668 "externally-managed-environment" guard on stock
+    macOS/Homebrew Python (a no-op inside a venv or on most Linux).
+    """
+    req = os.path.join(cdk_dir, "requirements.txt")
+    if not os.path.isfile(req):
+        return
+    base = [sys.executable, "-m", "pip", "install", "-q", "-r", req]
+    print(f"  pip install -r {req}")
+    result = subprocess.run(base, capture_output=True, text=True)
+    if result.returncode == 0:
+        return
+    combined = (result.stderr or "") + (result.stdout or "")
+    if "externally-managed-environment" in combined or "break-system-packages" in combined:
+        result = subprocess.run(base + ["--break-system-packages"], capture_output=True, text=True)
+        if result.returncode == 0:
+            return
+    sys.exit(
+        f"Failed to install CDK Python deps from {req}:\n"
+        f"{result.stderr.strip() or result.stdout.strip()}"
+    )
+
+
 def cdk_destroy(
     cdk_dir: str,
     stack_name: str,
@@ -682,6 +712,10 @@ def cmd_install(args):
     ensure_cdk_bootstrap(config)
 
     # 1. Base stack
+    #    Install the base stack's Python CDK runtime deps first; every cdk.json
+    #    runs `python3 app.py`, so aws-cdk-lib must be importable before synth.
+    print("\nInstalling CDK Python runtime dependencies...")
+    pip_install_cdk_deps(BASE_STACK_DIR)
     cdk_deploy(BASE_STACK_DIR, BASE_STACK_NAME, config, context={"dev_mode": "true"})
     outputs = cfn_outputs(BASE_STACK_NAME, config)
     dashboard_url = outputs.get("DashboardUrl", "")
@@ -697,6 +731,7 @@ def cmd_install(args):
         if not os.path.isdir(cdk_dir):
             print(f"  ! {feature['name']}: no {cdk_dir} directory, skipping")
             continue
+        pip_install_cdk_deps(cdk_dir)
         cdk_deploy(cdk_dir, feature["stack_name"], config)
 
     # 3. Summary

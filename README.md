@@ -39,7 +39,9 @@ If you'd rather run the CLI directly:
 ```bash
 # macOS (Homebrew Python): add --break-system-packages
 pip install pyyaml --break-system-packages
-# Or just: pip install pyyaml      (Linux, virtualenv, or any non-PEP668 env)
+# The Python CDK runtime (every cdk.json runs `python3 app.py`):
+pip install aws-cdk-lib constructs --break-system-packages
+# Or just: pip install pyyaml aws-cdk-lib constructs   (Linux, virtualenv, or any non-PEP668 env)
 
 python3 tokenburner.py install
 # optional: --profile <name>  --region us-east-1  --features drive chat
