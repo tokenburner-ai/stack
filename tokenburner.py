@@ -63,11 +63,6 @@ RETAINED_DDB_TABLES = (
 # Drive uses the tokendrive-* prefix; other features use tokenburner-*.
 RETAINED_S3_BUCKET_PREFIXES = ("tokenburner-", "tokendrive-")
 
-# CloudWatch log groups Lambda auto-creates on first invocation. They live
-# outside the CDK stacks, so `cdk destroy` never removes them; they accumulate
-# across install/destroy cycles. Drive's Lambdas use the tokendrive-* prefix.
-RETAINED_LOG_GROUP_PREFIXES = ("/aws/lambda/tokenburner-", "/aws/lambda/tokendrive-")
-
 LEGACY_CONTEXT_COMMANDS = {
     "deploy":       ("deploy.md",       "Deploy base + product stack, verify, present results"),
     "status":       ("status.md",       "Check stacks, resources, costs, health"),
@@ -497,40 +492,61 @@ def purge_retained_tables(config: dict) -> None:
         )
 
 
-def purge_retained_log_groups(config: dict) -> None:
-    """Delete CloudWatch log groups Lambda left behind after stack destroy.
+def stack_log_groups(config: dict, stack_name: str) -> list[str]:
+    """Log groups belonging to a stack's Lambda functions.
 
-    Lambda auto-creates /aws/lambda/<function-name> on first invocation. These
-    live outside the CDK stacks, so `cdk destroy` never removes them and they
-    pile up across install/destroy cycles. Mirror the S3/DDB purge and delete the
-    tokenburner-*/tokendrive-* ones.
+    Call this while the stack still exists. Lambda auto-creates
+    /aws/lambda/<function-name> on first invocation, outside the stack, so the
+    names have to be read from the stack's own resources before it is destroyed.
+    Deleting by name prefix instead would also remove log groups belonging to
+    features that are still deployed, and any the user created themselves.
     """
-    for prefix in RETAINED_LOG_GROUP_PREFIXES:
-        out = subprocess.run(
-            [*_aws_base(config), "logs", "describe-log-groups",
-             "--log-group-name-prefix", prefix,
-             "--query", "logGroups[].logGroupName", "--output", "json"],
+    out = subprocess.run(
+        [*_aws_base(config), "cloudformation", "list-stack-resources",
+         "--stack-name", stack_name,
+         "--query", "StackResourceSummaries[?ResourceType=='AWS::Lambda::Function']"
+                    ".PhysicalResourceId",
+         "--output", "json"],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        return []
+    try:
+        names = json.loads(out.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [f"/aws/lambda/{n}" for n in names if n]
+
+
+def purge_log_groups(config: dict, names: list[str]) -> list[str]:
+    """Delete the named log groups. Returns the ones that could not be deleted."""
+    failed = []
+    for name in sorted(set(names)):
+        result = subprocess.run(
+            [*_aws_base(config), "logs", "delete-log-group", "--log-group-name", name],
             capture_output=True, text=True,
         )
-        if out.returncode != 0:
-            continue
-        try:
-            names = json.loads(out.stdout or "[]")
-        except json.JSONDecodeError:
-            continue
-        for name in names:
-            print(f"  deleting retained log group {name}")
-            subprocess.run(
-                [*_aws_base(config), "logs", "delete-log-group", "--log-group-name", name],
-                capture_output=True,
-            )
+        if result.returncode == 0:
+            print(f"  deleted log group {name}")
+        elif "ResourceNotFoundException" in (result.stderr or ""):
+            pass  # already gone
+        else:
+            print(f"  ! could not delete log group {name}: "
+                  f"{(result.stderr or '').strip().splitlines()[-1] if result.stderr else 'unknown error'}")
+            failed.append(name)
+    return failed
 
 
-def purge_retained_resources(config: dict) -> None:
-    """Delete RETAIN DynamoDB tables, S3 buckets, and CloudWatch log groups after stack destroy."""
+def purge_retained_resources(config: dict, log_groups: list[str] | None = None) -> None:
+    """Delete RETAIN DynamoDB tables and S3 buckets, plus the given log groups.
+
+    Log groups are passed in rather than discovered, because they must be read
+    from each stack's resources before that stack is destroyed.
+    """
     purge_retained_s3_buckets(config)
     purge_retained_tables(config)
-    purge_retained_log_groups(config)
+    if log_groups:
+        purge_log_groups(config, log_groups)
 
 
 def destroy_stack(
@@ -810,9 +826,14 @@ def cmd_destroy(args):
     verify_account(config)
     purge = getattr(args, "purge_retained", False)
 
+    collected_log_groups: list[str] = []
+
     def destroy_one_feature(feature: dict) -> bool:
         dest = resolve_feature_dir(feature) if feature.get("path") else os.path.join(FEATURES_DIR, feature["name"])
         cdk_dir = os.path.join(dest, feature.get("cdk_dir", "cdk"))
+        # Read the stack's Lambda functions while the stack still exists.
+        if purge:
+            collected_log_groups.extend(stack_log_groups(config, feature["stack_name"]))
         pre = _agent_pre_destroy if feature["name"] == "agent" else None
         if feature["name"] == "agent":
             print("\n→ agent pre-destroy: detach tier policies and remove IAM users")
@@ -830,14 +851,16 @@ def cmd_destroy(args):
             if not destroy_one_feature(feature):
                 sys.exit(f"destroy failed for feature {args.feature}")
         if purge:
-            print("\n→ deleting retained S3 buckets, DynamoDB tables, and CloudWatch log groups")
-            purge_retained_resources(config)
+            print("\n→ deleting retained S3 buckets, DynamoDB tables, "
+                  f"and {len(collected_log_groups)} log group(s) from this stack")
+            purge_retained_resources(config, collected_log_groups)
         return
 
     # Destroy everything — product, features, base.
     confirm = input(
         "This will destroy all tokenburner stacks"
-        + (" and retained S3 buckets + DynamoDB tables" if purge else "")
+        + (" and retained S3 buckets, DynamoDB tables, and the CloudWatch log "
+           "history of every tokenburner Lambda" if purge else "")
         + ". Type 'destroy' to confirm: "
     ).strip()
     if confirm != "destroy":
@@ -852,6 +875,8 @@ def cmd_destroy(args):
             failed.append(feature["name"])
 
     print("\n→ destroying base stack")
+    if purge:
+        collected_log_groups.extend(stack_log_groups(config, BASE_STACK_NAME))
     if not destroy_stack(
         BASE_STACK_DIR,
         BASE_STACK_NAME,
@@ -861,8 +886,9 @@ def cmd_destroy(args):
         failed.append("base")
 
     if purge:
-        print("\n→ deleting retained S3 buckets, DynamoDB tables, and CloudWatch log groups")
-        purge_retained_resources(config)
+        print("\n→ deleting retained S3 buckets, DynamoDB tables, "
+              f"and {len(collected_log_groups)} log group(s) from the destroyed stacks")
+        purge_retained_resources(config, collected_log_groups)
 
     if os.path.exists(CREDS_FILE):
         os.remove(CREDS_FILE)

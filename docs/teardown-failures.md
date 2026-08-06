@@ -28,7 +28,7 @@ Stacks are gone in CloudFormation, but tables such as `tokenburner-api-keys` sti
 
 ### 5. Retained CloudWatch log groups after “successful” destroy
 
-Lambda auto-creates a log group (`/aws/lambda/<function-name>`) the first time each function runs. These live **outside** the CDK stacks, so `cdk destroy` never removes them. After a teardown, log groups like `/aws/lambda/tokenburner-agent-admin` or `/aws/lambda/tokendrive-index` remain and accumulate across install/destroy cycles. Low cost, but they clutter the account and are `tokenburner-*` / `tokendrive-*` leftovers.
+Lambda auto-creates a log group (`/aws/lambda/<function-name>`) the first time each function runs. These live **outside** the CDK stacks, so `cdk destroy` never removes them. After a teardown, log groups like `/aws/lambda/tokenburner-agent-admin` or `/aws/lambda/tokendrive-index` remain and accumulate across install/destroy cycles. Low cost, but they clutter the account and are `tokenburner-*` / `tokenburner-*` leftovers.
 
 ---
 
@@ -63,7 +63,7 @@ As of the teardown fix PR, `tokenburner destroy` handles the common case automat
 | Agent pre-destroy | Detach tier policies, delete access keys, delete `/tokenburner-agent/` users |
 | Feature stacks | `cdk destroy` with retry + CloudFormation fallback on `DELETE_FAILED` |
 | Base stack | `cdk destroy -c dev_mode=true` after all features are gone |
-| `--purge-retained` | Empties and deletes retained S3 buckets (`tokenburner-*`, `tokendrive-*`, or `ManagedBy=tokenburner` tag), deletes retained DynamoDB tables, deletes retained CloudWatch log groups (`/aws/lambda/tokenburner-*`, `/aws/lambda/tokendrive-*`), removes `~/.tokenburner/credentials` |
+| `--purge-retained` | Empties and deletes retained S3 buckets (`tokenburner-*`, `tokenburner-*`, or `ManagedBy=tokenburner` tag), deletes retained DynamoDB tables, deletes retained CloudWatch log groups (`/aws/lambda/tokenburner-*`, `/aws/lambda/tokenburner-*`), removes `~/.tokenburner/credentials` |
 
 ### Full clean teardown
 
