@@ -37,11 +37,13 @@ CloudFront eventual consistency on each new distribution.
 If you'd rather run the CLI directly:
 
 ```bash
-# macOS (Homebrew Python): add --break-system-packages
-pip install pyyaml --break-system-packages
-# The Python CDK runtime (every cdk.json runs `python3 app.py`):
-pip install aws-cdk-lib constructs --break-system-packages
-# Or just: pip install pyyaml aws-cdk-lib constructs   (Linux, virtualenv, or any non-PEP668 env)
+# The CLI needs pyyaml. On a PEP 668 Python (stock macOS, Homebrew, recent
+# Debian) install it in a virtualenv rather than the system interpreter.
+pip install pyyaml
+
+# The Python CDK runtime (aws-cdk-lib, constructs) is handled for you: the CLI
+# creates .venv-cdk in this repo on first deploy and installs each stack's
+# cdk/requirements.txt there, then points cdk at that interpreter.
 
 python3 tokenburner.py install
 # optional: --profile <name>  --region us-east-1  --features drive chat

@@ -30,13 +30,16 @@ python3 --version
 docker --version
 npx cdk --version || npm install -g aws-cdk
 python3 -c "import yaml" 2>/dev/null || pip install pyyaml --break-system-packages
-python3 -c "import aws_cdk" 2>/dev/null || pip install aws-cdk-lib constructs --break-system-packages
 ```
 
 If Docker isn't running, instruct the user to start it. CDK bundling needs it.
 
-The `--break-system-packages` flag is required on stock macOS Python 3.12+
-(Homebrew's PEP 668 protection). On Linux or virtualenv it's a no-op.
+Do not install the CDK runtime by hand. The CLI creates `.venv-cdk` in the
+repo on first deploy, installs each stack's `cdk/requirements.txt` into it, and
+puts it on PATH so `python3 app.py` in every cdk.json uses that interpreter.
+
+`pyyaml` above is the CLI's own dependency and is unrelated to the CDK
+runtime, which is never installed into the host interpreter.
 
 The `aws-cdk-lib` / `constructs` packages are the Python CDK runtime: every
 `cdk.json` runs `python3 app.py`, so they must be importable or the first

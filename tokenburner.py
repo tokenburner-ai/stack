@@ -238,6 +238,12 @@ def _cdk_env(config: dict) -> dict:
     env["AWS_DEFAULT_REGION"] = region
     env["CDK_DEFAULT_REGION"] = region
     env["CDK_DEFAULT_ACCOUNT"] = config["account_id"]
+    # Put the managed virtualenv first on PATH so the `python3 app.py` in every
+    # cdk.json runs the interpreter the CDK requirements were installed into,
+    # rather than whichever python3 the shell happens to resolve.
+    if os.path.isfile(_cdk_venv_python()):
+        env["PATH"] = _cdk_venv_bin() + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = CDK_VENV_DIR
     return env
 
 
@@ -254,34 +260,65 @@ def cdk_deploy(cdk_dir: str, stack_name: str | None, config: dict, context: dict
         sys.exit(f"cdk deploy failed for {stack_name or cdk_dir}")
 
 
-def pip_install_cdk_deps(cdk_dir: str) -> None:
-    """Install a CDK app's Python runtime deps before its first synth.
+CDK_VENV_DIR = os.path.join(HERE, ".venv-cdk")
+
+
+def _cdk_venv_bin() -> str:
+    """Directory holding the managed venv's executables."""
+    return os.path.join(CDK_VENV_DIR, "Scripts" if os.name == "nt" else "bin")
+
+
+def _cdk_venv_python() -> str:
+    return os.path.join(_cdk_venv_bin(), "python.exe" if os.name == "nt" else "python")
+
+
+def ensure_cdk_venv() -> str:
+    """Create the repo-managed virtualenv the CDK apps run in, if absent.
 
     Every cdk.json runs `"app": "python3 app.py"`, so aws-cdk-lib / constructs
-    must be importable by the interpreter that runs app.py or `cdk deploy` dies
-    at synth with `ModuleNotFoundError: No module named 'aws_cdk'`. Nothing in a
-    fresh clone installs them, so install each stack's cdk/requirements.txt into
-    this interpreter before deploying. Retries with --break-system-packages to
-    clear the PEP 668 "externally-managed-environment" guard on stock
-    macOS/Homebrew Python (a no-op inside a venv or on most Linux).
+    must be importable by whichever interpreter runs app.py, or `cdk deploy`
+    dies at synth with `ModuleNotFoundError: No module named 'aws_cdk'`.
+    Nothing in a fresh clone installs them.
+
+    They go in a virtualenv owned by this repo rather than into whatever Python
+    happens to be running. Installing into the host interpreter can replace
+    packages other software on the machine depends on, and on a PEP 668
+    "externally managed" install pip refuses on purpose. Overriding that refusal
+    is exactly what the packaging guidance says not to do, so this creates an
+    isolated environment instead.
     """
+    python = _cdk_venv_python()
+    if os.path.isfile(python):
+        return python
+    print(f"  creating CDK virtualenv in {CDK_VENV_DIR}")
+    result = subprocess.run(
+        [sys.executable, "-m", "venv", CDK_VENV_DIR], capture_output=True, text=True
+    )
+    if result.returncode != 0 or not os.path.isfile(python):
+        sys.exit(
+            f"Could not create a virtualenv at {CDK_VENV_DIR}.\n"
+            f"{(result.stderr or result.stdout).strip()}\n"
+            f"On Debian/Ubuntu this usually means the venv module is missing: "
+            f"install python3-venv and re-run."
+        )
+    return python
+
+
+def pip_install_cdk_deps(cdk_dir: str) -> None:
+    """Install one CDK app's Python requirements into the managed virtualenv."""
     req = os.path.join(cdk_dir, "requirements.txt")
     if not os.path.isfile(req):
         return
-    base = [sys.executable, "-m", "pip", "install", "-q", "-r", req]
-    print(f"  pip install -r {req}")
-    result = subprocess.run(base, capture_output=True, text=True)
-    if result.returncode == 0:
-        return
-    combined = (result.stderr or "") + (result.stdout or "")
-    if "externally-managed-environment" in combined or "break-system-packages" in combined:
-        result = subprocess.run(base + ["--break-system-packages"], capture_output=True, text=True)
-        if result.returncode == 0:
-            return
-    sys.exit(
-        f"Failed to install CDK Python deps from {req}:\n"
-        f"{result.stderr.strip() or result.stdout.strip()}"
+    python = ensure_cdk_venv()
+    print(f"  installing {os.path.relpath(req, HERE)} into the CDK virtualenv")
+    result = subprocess.run(
+        [python, "-m", "pip", "install", "-q", "-r", req], capture_output=True, text=True
     )
+    if result.returncode != 0:
+        sys.exit(
+            f"Failed to install CDK Python deps from {req}:\n"
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
 
 
 def cdk_destroy(
@@ -789,11 +826,15 @@ def cmd_deploy(args):
     config = load_config(interactive=False)
     verify_account(config)
     if args.feature == "base":
+        pip_install_cdk_deps(BASE_STACK_DIR)
         cdk_deploy(BASE_STACK_DIR, BASE_STACK_NAME, config, context={"dev_mode": "true"})
         return
     feature = find_feature(args.feature)
     dest = resolve_feature_dir(feature)
     cdk_dir = os.path.join(dest, feature.get("cdk_dir", "cdk"))
+    # `deploy <feature>` is the documented recovery step after enabling Bedrock
+    # model access, so it has to satisfy the same requirements as install.
+    pip_install_cdk_deps(cdk_dir)
     cdk_deploy(cdk_dir, feature["stack_name"], config)
 
 
