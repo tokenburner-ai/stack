@@ -629,6 +629,28 @@ def _availability_status(value) -> str:
     return value or ""
 
 
+def _foundation_model_for_profile(config: dict, profile_id: str) -> str:
+    """Foundation model id an inference profile routes to, or "" if unknown.
+
+    Inference profile ids carry a routing prefix (us., eu., apac., global.) and
+    some carry none, so the foundation model id cannot be derived reliably by
+    stripping text. Bedrock reports the profile's own model ARNs, so read it
+    from there and fall back to the id itself if it is already a model id.
+    """
+    try:
+        prof = run_aws(
+            ["bedrock", "get-inference-profile", "--inference-profile-identifier", profile_id],
+            profile=config["aws_profile"], region=config["region"],
+        )
+    except SystemExit:
+        return ""
+    for model in prof.get("models") or []:
+        arn = model.get("modelArn") or ""
+        if "/" in arn:
+            return arn.rsplit("/", 1)[-1]
+    return ""
+
+
 def ensure_bedrock_model(config: dict, model_id: str = DEFAULT_BEDROCK_MODEL_ID) -> None:
     """Pre-flight: confirm the configured chat model is actually invocable.
 
@@ -666,13 +688,18 @@ def ensure_bedrock_model(config: dict, model_id: str = DEFAULT_BEDROCK_MODEL_ID)
             f"Then re-run `python3 tokenburner.py install`.\n"
         )
 
-    # The inference profile id carries a region-routing prefix (us./eu./apac.);
-    # get-foundation-model-availability wants the underlying foundation model id.
-    foundation_model_id = model_id
-    for prefix in ("us.", "eu.", "apac.", "us-gov."):
-        if foundation_model_id.startswith(prefix):
-            foundation_model_id = foundation_model_id[len(prefix):]
-            break
+    # get-foundation-model-availability wants the underlying foundation model id,
+    # while model_id is an inference profile id. Ask Bedrock for the profile's
+    # own model ARNs rather than stripping a routing prefix by hand: the prefix
+    # set is not fixed (us., eu., apac., global.) and some ids carry none.
+    foundation_model_id = _foundation_model_for_profile(config, model_id)
+    if not foundation_model_id:
+        sys.exit(
+            f"\nCould not determine which foundation model `{model_id}` routes to "
+            f"in {config['region']}, so its usability cannot be confirmed.\n"
+            f"Check the model id in features.yaml, or verify access directly:\n"
+            f"  {console_url}\n"
+        )
     try:
         avail = run_aws(
             ["bedrock", "get-foundation-model-availability",
@@ -680,40 +707,49 @@ def ensure_bedrock_model(config: dict, model_id: str = DEFAULT_BEDROCK_MODEL_ID)
             profile=config["aws_profile"], region=config["region"],
         )
     except SystemExit:
-        print(
-            f"\nWARNING: could not confirm invocability of `{model_id}` in "
-            f"{config['region']} (get-foundation-model-availability failed).\n"
-            f"Continuing — if chat 500s on the first message, submit the Anthropic "
-            f"use-case form:\n  {console_url}\n"
+        # Failing open here reintroduces exactly what this check exists to stop:
+        # chat deploys and 500s on the first message. Access denied, throttling,
+        # an old CLI, or a service error all land here, so stop instead.
+        sys.exit(
+            f"\nCould not confirm that `{model_id}` is usable in {config['region']}.\n"
+            f"get-foundation-model-availability failed. Common causes: the caller "
+            f"lacks bedrock:GetFoundationModelAvailability, or the AWS CLI is too "
+            f"old for this operation.\n"
+            f"Verify access here, then re-run:\n  {console_url}\n"
+            f"To install the other features meanwhile:\n"
+            f"  python3 tokenburner.py install --features drive forums agent\n"
         )
-        return
 
     authorization = _availability_status(avail.get("authorizationStatus"))
     entitlement = _availability_status(avail.get("entitlementAvailability"))
     region_avail = _availability_status(avail.get("regionAvailability"))
     agreement = _availability_status(avail.get("agreementAvailability"))
 
+    # Require each status explicitly. Treating a missing field as acceptable
+    # would report an incomplete response as usable.
     blockers = []
-    if authorization and authorization != "AUTHORIZED":
-        blockers.append(f"authorizationStatus={authorization}")
-    if entitlement and entitlement != "AVAILABLE":
-        blockers.append(f"entitlementAvailability={entitlement}")
-    if region_avail and region_avail != "AVAILABLE":
-        blockers.append(f"regionAvailability={region_avail}")
-    if agreement != "AVAILABLE":
-        blockers.append(f"agreementAvailability={agreement or 'NOT_AVAILABLE'}")
+    for label, value, expected in (
+        ("authorizationStatus", authorization, "AUTHORIZED"),
+        ("entitlementAvailability", entitlement, "AVAILABLE"),
+        ("regionAvailability", region_avail, "AVAILABLE"),
+        ("agreementAvailability", agreement, "AVAILABLE"),
+    ):
+        if value != expected:
+            blockers.append(f"{label}={value or 'missing'}")
 
     if blockers:
+        if any(b.startswith("agreementAvailability") for b in blockers):
+            remedy = ("This is the Anthropic use-case details form. Submit it for "
+                      "this account, then request the model in model access:\n")
+        else:
+            remedy = ("Check model access and that the model is offered in this "
+                      "region:\n")
         sys.exit(
             f"\nThe Bedrock model `{model_id}` is listed in {config['region']} but is "
             f"not yet invocable ({', '.join(blockers)}).\n"
-            f"This almost always means the Anthropic use-case details form has not "
-            f"been submitted for this account.\n"
-            f"Open model access, request `{model_id}`, and complete the Anthropic "
-            f"use-case form:\n"
+            f"{remedy}"
             f"  {console_url}\n"
-            f"Approval for Haiku is usually instant; then re-run "
-            f"`python3 tokenburner.py install`.\n"
+            f"Then re-run `python3 tokenburner.py install`.\n"
         )
 
     print(f"Bedrock model OK: {model_id} invocable in {config['region']}.")
