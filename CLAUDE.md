@@ -29,7 +29,7 @@ node --version
 python3 --version
 docker --version
 npx cdk --version || npm install -g aws-cdk
-python3 -c "import yaml" 2>/dev/null || pip install pyyaml --break-system-packages
+python3 -c "import yaml" 2>/dev/null || echo "install pyyaml, ideally in a virtualenv"
 ```
 
 If Docker isn't running, instruct the user to start it. CDK bundling needs it.

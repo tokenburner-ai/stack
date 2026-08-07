@@ -301,15 +301,29 @@ def ensure_cdk_venv() -> str:
             f"On Debian/Ubuntu this usually means the venv module is missing: "
             f"install python3-venv and re-run."
         )
+    # Every cdk.json runs `python3 app.py`, but a Windows virtualenv provides
+    # python.exe with no python3 alias, so PATH would fall through to the host
+    # interpreter. Add the alias so the managed environment is always the one
+    # that runs, on either platform.
+    if os.name == "nt":
+        alias = os.path.join(_cdk_venv_bin(), "python3.exe")
+        if not os.path.isfile(alias):
+            try:
+                shutil.copy2(python, alias)
+            except OSError as exc:
+                sys.exit(
+                    f"Could not create {alias}, which cdk needs because every "
+                    f"cdk.json runs `python3 app.py`: {exc}"
+                )
     return python
 
 
-def pip_install_cdk_deps(cdk_dir: str) -> None:
-    """Install one CDK app's Python requirements into the managed virtualenv."""
-    req = os.path.join(cdk_dir, "requirements.txt")
-    if not os.path.isfile(req):
+_INSTALLED_REQS: set[str] = set()
+
+
+def _pip_install(python: str, req: str) -> None:
+    if req in _INSTALLED_REQS or not os.path.isfile(req):
         return
-    python = ensure_cdk_venv()
     print(f"  installing {os.path.relpath(req, HERE)} into the CDK virtualenv")
     result = subprocess.run(
         [python, "-m", "pip", "install", "-q", "-r", req], capture_output=True, text=True
@@ -319,6 +333,20 @@ def pip_install_cdk_deps(cdk_dir: str) -> None:
             f"Failed to install CDK Python deps from {req}:\n"
             f"{result.stderr.strip() or result.stdout.strip()}"
         )
+    _INSTALLED_REQS.add(req)
+
+
+def pip_install_cdk_deps(cdk_dir: str) -> None:
+    """Make the managed virtualenv ready to run this CDK app.
+
+    Always creates the virtualenv and installs the base stack's requirements as
+    the baseline, because a feature may ship no requirements file of its own and
+    would otherwise fall through to the host interpreter. Then layers this
+    stack's own requirements on top when it has them.
+    """
+    python = ensure_cdk_venv()
+    _pip_install(python, os.path.join(BASE_STACK_DIR, "requirements.txt"))
+    _pip_install(python, os.path.join(cdk_dir, "requirements.txt"))
 
 
 def cdk_destroy(
@@ -331,6 +359,7 @@ def cdk_destroy(
     args = _cdk_cmd() + ["destroy", stack_name, "--force"]
     for k, v in (context or {}).items():
         args += ["-c", f"{k}={v}"]
+    pip_install_cdk_deps(cdk_dir)
     print(f"\n→ cdk destroy {stack_name}  (in {cdk_dir})  region={config['region']}")
     result = subprocess.run(args, cwd=cdk_dir, env=_cdk_env(config))
     return result.returncode == 0

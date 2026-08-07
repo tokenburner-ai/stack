@@ -37,9 +37,9 @@ CloudFront eventual consistency on each new distribution.
 If you'd rather run the CLI directly:
 
 ```bash
-# The CLI needs pyyaml. On a PEP 668 Python (stock macOS, Homebrew, recent
-# Debian) install it in a virtualenv rather than the system interpreter.
-pip install pyyaml
+# The CLI itself needs pyyaml. On a PEP 668 Python (stock macOS, Homebrew,
+# recent Debian) put it in a virtualenv rather than the system interpreter:
+python3 -m venv .venv && source .venv/bin/activate && pip install pyyaml
 
 # The Python CDK runtime (aws-cdk-lib, constructs) is handled for you: the CLI
 # creates .venv-cdk in this repo on first deploy and installs each stack's
