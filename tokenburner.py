@@ -652,7 +652,13 @@ def _foundation_model_for_profile(config: dict, profile_id: str) -> str:
 
 
 def ensure_bedrock_model(config: dict, model_id: str = DEFAULT_BEDROCK_MODEL_ID) -> None:
-    """Pre-flight: confirm the configured chat model is actually invocable.
+    """Pre-flight: confirm Bedrock reports the configured chat model as usable.
+
+    This is a control-plane check, not a test invocation, so it confirms
+    availability rather than proving an end-to-end call will succeed. It needs
+    bedrock:ListInferenceProfiles, bedrock:GetInferenceProfile, and
+    bedrock:GetFoundationModelAvailability, and stops the install if any of
+    them cannot answer.
 
     Two checks. First, `bedrock list-inference-profiles` must list the model id.
     But profile existence is not invocability: an account can list the inference
@@ -674,10 +680,19 @@ def ensure_bedrock_model(config: dict, model_id: str = DEFAULT_BEDROCK_MODEL_ID)
             profile=config["aws_profile"], region=config["region"],
         )
     except SystemExit:
-        # Bedrock might not be available at all in this region.
-        print(f"\nWARNING: could not query Bedrock in {config['region']}. "
-              f"Chat may fail. Continuing — non-chat features are unaffected.")
-        return
+        # Continuing here would deploy chat unchecked, which is the failure this
+        # pre-flight exists to prevent. Bedrock may genuinely be unavailable in
+        # the region, or the caller may lack bedrock:ListInferenceProfiles;
+        # either way the model cannot be confirmed, so stop and say so.
+        sys.exit(
+            f"\nCould not query Bedrock in {config['region']}, so `{model_id}` "
+            f"cannot be confirmed as usable.\n"
+            f"Bedrock may not be offered in this region, or the caller may lack "
+            f"bedrock:ListInferenceProfiles.\n"
+            f"Check model access here:\n  {console_url}\n"
+            f"To install the other features meanwhile:\n"
+            f"  python3 tokenburner.py install --features drive forums agent\n"
+        )
     profiles = data.get("inferenceProfileSummaries", []) or []
     ids = {p.get("inferenceProfileId", "") for p in profiles}
     if model_id not in ids:
