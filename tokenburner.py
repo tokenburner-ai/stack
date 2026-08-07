@@ -492,6 +492,17 @@ def purge_retained_tables(config: dict) -> None:
         )
 
 
+def _product_log_groups(config: dict) -> list[str]:
+    """Product stack log groups, or none when that stack is not deployed here.
+
+    destroy_product_stack() reports success when the product template is absent,
+    without destroying anything, so its logs must not be queued in that case.
+    """
+    if not os.path.isdir(PRODUCT_CDK_DIR):
+        return []
+    return stack_log_groups(config, f"tokenburner-{config.get('product_name', 'demo')}")
+
+
 def stack_log_groups(config: dict, stack_name: str) -> list[str]:
     """Log groups belonging to a stack's Lambda functions.
 
@@ -840,23 +851,26 @@ def cmd_destroy(args):
     def destroy_one_feature(feature: dict) -> bool:
         dest = resolve_feature_dir(feature) if feature.get("path") else os.path.join(FEATURES_DIR, feature["name"])
         cdk_dir = os.path.join(dest, feature.get("cdk_dir", "cdk"))
-        # Read the stack's Lambda functions while the stack still exists.
-        if purge:
-            collected_log_groups.extend(stack_log_groups(config, feature["stack_name"]))
+        # Read the stack's Lambda functions while the stack still exists, but
+        # only queue them for deletion once the stack is actually gone. A stack
+        # that failed to destroy is still running and still needs its logs.
+        pending = stack_log_groups(config, feature["stack_name"]) if purge else []
         pre = _agent_pre_destroy if feature["name"] == "agent" else None
         if feature["name"] == "agent":
             print("\n→ agent pre-destroy: detach tier policies and remove IAM users")
         ok = destroy_stack(cdk_dir, feature["stack_name"], config, pre_destroy=pre)
         if not ok:
-            print(f"  ! {feature['name']} destroy failed")
-        return ok
+            print(f"  ! {feature['name']} destroy failed, keeping its log groups")
+            return False
+        collected_log_groups.extend(pending)
+        return True
 
     if args.feature:
         if args.feature == "product":
-            if purge:
-                collected_log_groups.extend(stack_log_groups(config, f"tokenburner-{config.get('product_name', 'demo')}"))
+            pending = _product_log_groups(config) if purge else []
             if not destroy_product_stack(config):
                 sys.exit("product stack destroy failed")
+            collected_log_groups.extend(pending)
         else:
             feature = find_feature(args.feature)
             if not destroy_one_feature(feature):
@@ -880,25 +894,29 @@ def cmd_destroy(args):
     if confirm != "destroy":
         sys.exit("Aborted.")
 
-    print("\n→ destroying product stack (if deployed)")
-    if purge:
-        collected_log_groups.extend(stack_log_groups(config, f"tokenburner-{config.get('product_name', 'demo')}"))
-    destroy_product_stack(config)
-
     failed: list[str] = []
+
+    print("\n→ destroying product stack (if deployed)")
+    product_pending = _product_log_groups(config) if purge else []
+    if destroy_product_stack(config):
+        collected_log_groups.extend(product_pending)
+    else:
+        failed.append("product")
+
     for feature in load_features():
         if not destroy_one_feature(feature):
             failed.append(feature["name"])
 
     print("\n→ destroying base stack")
-    if purge:
-        collected_log_groups.extend(stack_log_groups(config, BASE_STACK_NAME))
-    if not destroy_stack(
+    base_pending = stack_log_groups(config, BASE_STACK_NAME) if purge else []
+    if destroy_stack(
         BASE_STACK_DIR,
         BASE_STACK_NAME,
         config,
         context={"dev_mode": "true"},
     ):
+        collected_log_groups.extend(base_pending)
+    else:
         failed.append("base")
 
     if purge:
