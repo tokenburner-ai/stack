@@ -272,6 +272,28 @@ def _cdk_venv_python() -> str:
     return os.path.join(_cdk_venv_bin(), "python.exe" if os.name == "nt" else "python")
 
 
+def _ensure_python3_alias(python: str) -> None:
+    """Give a Windows virtualenv a python3 executable.
+
+    Every cdk.json runs `python3 app.py`, but a Windows virtualenv provides
+    python.exe with no python3 alias, so PATH would fall through to the host
+    interpreter. Runs on every call, not only at creation, so an environment
+    made before this existed is repaired rather than silently bypassed.
+    """
+    if os.name != "nt":
+        return
+    alias = os.path.join(_cdk_venv_bin(), "python3.exe")
+    if os.path.isfile(alias):
+        return
+    try:
+        shutil.copy2(python, alias)
+    except OSError as exc:
+        sys.exit(
+            f"Could not create {alias}, which cdk needs because every "
+            f"cdk.json runs `python3 app.py`: {exc}"
+        )
+
+
 def ensure_cdk_venv() -> str:
     """Create the repo-managed virtualenv the CDK apps run in, if absent.
 
@@ -289,6 +311,7 @@ def ensure_cdk_venv() -> str:
     """
     python = _cdk_venv_python()
     if os.path.isfile(python):
+        _ensure_python3_alias(python)
         return python
     print(f"  creating CDK virtualenv in {CDK_VENV_DIR}")
     result = subprocess.run(
@@ -301,28 +324,17 @@ def ensure_cdk_venv() -> str:
             f"On Debian/Ubuntu this usually means the venv module is missing: "
             f"install python3-venv and re-run."
         )
-    # Every cdk.json runs `python3 app.py`, but a Windows virtualenv provides
-    # python.exe with no python3 alias, so PATH would fall through to the host
-    # interpreter. Add the alias so the managed environment is always the one
-    # that runs, on either platform.
-    if os.name == "nt":
-        alias = os.path.join(_cdk_venv_bin(), "python3.exe")
-        if not os.path.isfile(alias):
-            try:
-                shutil.copy2(python, alias)
-            except OSError as exc:
-                sys.exit(
-                    f"Could not create {alias}, which cdk needs because every "
-                    f"cdk.json runs `python3 app.py`: {exc}"
-                )
+    _ensure_python3_alias(python)
     return python
 
 
 _INSTALLED_REQS: set[str] = set()
 
 
-def _pip_install(python: str, req: str) -> None:
-    if req in _INSTALLED_REQS or not os.path.isfile(req):
+def _pip_install(python: str, req: str, force: bool = False) -> None:
+    if not os.path.isfile(req):
+        return
+    if req in _INSTALLED_REQS and not force:
         return
     print(f"  installing {os.path.relpath(req, HERE)} into the CDK virtualenv")
     result = subprocess.run(
@@ -345,8 +357,13 @@ def pip_install_cdk_deps(cdk_dir: str) -> None:
     stack's own requirements on top when it has them.
     """
     python = ensure_cdk_venv()
-    _pip_install(python, os.path.join(BASE_STACK_DIR, "requirements.txt"))
-    _pip_install(python, os.path.join(cdk_dir, "requirements.txt"))
+    own = os.path.join(cdk_dir, "requirements.txt")
+    base = os.path.join(BASE_STACK_DIR, "requirements.txt")
+    # Reassert the baseline for every stack. The environment is shared, so a
+    # stack that pinned something different would otherwise leave the next one
+    # running against whatever the previous stack installed.
+    _pip_install(python, base, force=own != base)
+    _pip_install(python, own)
 
 
 def cdk_destroy(
