@@ -28,7 +28,7 @@ Stacks are gone in CloudFormation, but tables such as `tokenburner-api-keys` sti
 
 ### 5. Retained CloudWatch log groups after “successful” destroy
 
-Lambda auto-creates a log group (`/aws/lambda/<function-name>`) the first time each function runs. These live **outside** the CDK stacks, so `cdk destroy` never removes them. After a teardown, log groups like `/aws/lambda/tokenburner-agent-admin` or `/aws/lambda/tokendrive-index` remain and accumulate across install/destroy cycles. Low cost, but they clutter the account and are `tokenburner-*` / `tokenburner-*` leftovers.
+Lambda auto-creates a log group (`/aws/lambda/<function-name>`) the first time each function runs. These live **outside** the CDK stacks, so `cdk destroy` never removes them. After a teardown, log groups like `/aws/lambda/tokenburner-agent-admin` or `/aws/lambda/tokenburner-drive` remain and accumulate across install/destroy cycles. Low cost, but they clutter the account and are `tokenburner-*` / `tokenburner-*` leftovers.
 
 ---
 
@@ -132,7 +132,7 @@ This is common when using account root or a user that does not assume the CDK de
 
 ## Related files
 
-- `tokenburner.py` — `cleanup_agent_iam_users`, `destroy_stack`, `purge_retained_resources`, `delete_s3_bucket`, `purge_retained_log_groups`
+- `tokenburner.py` — `cleanup_agent_iam_users`, `destroy_stack`, `purge_retained_resources`, `delete_s3_bucket`, `purge_log_groups`
 - `features/agent/cdk/stack.py` — `TierBasic` / `TierPro` policies
 - `features/agent/app/admin_api.py` — creates users and attaches policies
 - `context/destroy.md` — AI assistant playbook for destroy

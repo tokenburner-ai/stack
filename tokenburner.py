@@ -510,10 +510,18 @@ def stack_log_groups(config: dict, stack_name: str) -> list[str]:
         capture_output=True, text=True,
     )
     if out.returncode != 0:
+        err = (out.stderr or "").strip()
+        # A stack that is already gone is fine; anything else means the mapping
+        # is about to be lost, so say so rather than silently deleting nothing.
+        if "does not exist" not in err:
+            print(f"  ! could not read resources of {stack_name}, its log groups "
+                  f"will be left behind: {err.splitlines()[-1] if err else 'unknown error'}")
         return []
     try:
         names = json.loads(out.stdout or "[]")
     except json.JSONDecodeError:
+        print(f"  ! unreadable resource list for {stack_name}, its log groups "
+              f"will be left behind")
         return []
     return [f"/aws/lambda/{n}" for n in names if n]
 
@@ -537,7 +545,7 @@ def purge_log_groups(config: dict, names: list[str]) -> list[str]:
     return failed
 
 
-def purge_retained_resources(config: dict, log_groups: list[str] | None = None) -> None:
+def purge_retained_resources(config: dict, log_groups: list[str] | None = None) -> list[str]:
     """Delete RETAIN DynamoDB tables and S3 buckets, plus the given log groups.
 
     Log groups are passed in rather than discovered, because they must be read
@@ -546,7 +554,8 @@ def purge_retained_resources(config: dict, log_groups: list[str] | None = None) 
     purge_retained_s3_buckets(config)
     purge_retained_tables(config)
     if log_groups:
-        purge_log_groups(config, log_groups)
+        return purge_log_groups(config, log_groups)
+    return []
 
 
 def destroy_stack(
@@ -844,6 +853,8 @@ def cmd_destroy(args):
 
     if args.feature:
         if args.feature == "product":
+            if purge:
+                collected_log_groups.extend(stack_log_groups(config, f"tokenburner-{config.get('product_name', 'demo')}"))
             if not destroy_product_stack(config):
                 sys.exit("product stack destroy failed")
         else:
@@ -853,7 +864,10 @@ def cmd_destroy(args):
         if purge:
             print("\n→ deleting retained S3 buckets, DynamoDB tables, "
                   f"and {len(collected_log_groups)} log group(s) from this stack")
-            purge_retained_resources(config, collected_log_groups)
+            undeleted = purge_retained_resources(config, collected_log_groups)
+            if undeleted:
+                sys.exit(f"{len(undeleted)} log group(s) could not be deleted; "
+                         f"the stack itself was destroyed.")
         return
 
     # Destroy everything — product, features, base.
@@ -867,6 +881,8 @@ def cmd_destroy(args):
         sys.exit("Aborted.")
 
     print("\n→ destroying product stack (if deployed)")
+    if purge:
+        collected_log_groups.extend(stack_log_groups(config, f"tokenburner-{config.get('product_name', 'demo')}"))
     destroy_product_stack(config)
 
     failed: list[str] = []
@@ -888,7 +904,9 @@ def cmd_destroy(args):
     if purge:
         print("\n→ deleting retained S3 buckets, DynamoDB tables, "
               f"and {len(collected_log_groups)} log group(s) from the destroyed stacks")
-        purge_retained_resources(config, collected_log_groups)
+        undeleted = purge_retained_resources(config, collected_log_groups)
+        if undeleted:
+            failed.append(f"{len(undeleted)} log group(s)")
 
     if os.path.exists(CREDS_FILE):
         os.remove(CREDS_FILE)
