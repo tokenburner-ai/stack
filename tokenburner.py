@@ -642,8 +642,14 @@ def _foundation_model_for_profile(config: dict, profile_id: str) -> str:
             ["bedrock", "get-inference-profile", "--inference-profile-identifier", profile_id],
             profile=config["aws_profile"], region=config["region"],
         )
-    except SystemExit:
-        return ""
+    except SystemExit as exc:
+        sys.exit(
+            f"\nCould not look up the inference profile `{profile_id}` in "
+            f"{config['region']}, so the model it routes to is unknown.\n"
+            f"The caller may lack bedrock:GetInferenceProfile, the AWS CLI may "
+            f"be too old for this operation, or Bedrock may have returned an "
+            f"error.\n{exc}\n"
+        )
     for model in prof.get("models") or []:
         arn = model.get("modelArn") or ""
         if "/" in arn:
@@ -767,7 +773,7 @@ def ensure_bedrock_model(config: dict, model_id: str = DEFAULT_BEDROCK_MODEL_ID)
             f"Then re-run `python3 tokenburner.py install`.\n"
         )
 
-    print(f"Bedrock model OK: {model_id} invocable in {config['region']}.")
+    print(f"Bedrock model OK: {model_id} reported available in {config['region']}.")
 
 
 def cmd_install(args):
