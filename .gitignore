@@ -12,3 +12,6 @@ node_modules/
 
 # Feature repos cloned by `tokenburner install` — not tracked in the stack repo.
 features/
+
+# CDK runtime virtualenv created by tokenburner.py
+.venv-cdk/

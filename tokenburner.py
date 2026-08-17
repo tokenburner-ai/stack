@@ -238,6 +238,12 @@ def _cdk_env(config: dict) -> dict:
     env["AWS_DEFAULT_REGION"] = region
     env["CDK_DEFAULT_REGION"] = region
     env["CDK_DEFAULT_ACCOUNT"] = config["account_id"]
+    # Put the managed virtualenv first on PATH so the `python3 app.py` in every
+    # cdk.json runs the interpreter the CDK requirements were installed into,
+    # rather than whichever python3 the shell happens to resolve.
+    if os.path.isfile(_cdk_venv_python()):
+        env["PATH"] = _cdk_venv_bin() + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = CDK_VENV_DIR
     return env
 
 
@@ -254,6 +260,112 @@ def cdk_deploy(cdk_dir: str, stack_name: str | None, config: dict, context: dict
         sys.exit(f"cdk deploy failed for {stack_name or cdk_dir}")
 
 
+CDK_VENV_DIR = os.path.join(HERE, ".venv-cdk")
+
+
+def _cdk_venv_bin() -> str:
+    """Directory holding the managed venv's executables."""
+    return os.path.join(CDK_VENV_DIR, "Scripts" if os.name == "nt" else "bin")
+
+
+def _cdk_venv_python() -> str:
+    return os.path.join(_cdk_venv_bin(), "python.exe" if os.name == "nt" else "python")
+
+
+def _ensure_python3_alias(python: str) -> None:
+    """Give a Windows virtualenv a python3 executable.
+
+    Every cdk.json runs `python3 app.py`, but a Windows virtualenv provides
+    python.exe with no python3 alias, so PATH would fall through to the host
+    interpreter. Runs on every call, not only at creation, so an environment
+    made before this existed is repaired rather than silently bypassed.
+    """
+    if os.name != "nt":
+        return
+    alias = os.path.join(_cdk_venv_bin(), "python3.exe")
+    if os.path.isfile(alias):
+        return
+    try:
+        shutil.copy2(python, alias)
+    except OSError as exc:
+        sys.exit(
+            f"Could not create {alias}, which cdk needs because every "
+            f"cdk.json runs `python3 app.py`: {exc}"
+        )
+
+
+def ensure_cdk_venv() -> str:
+    """Create the repo-managed virtualenv the CDK apps run in, if absent.
+
+    Every cdk.json runs `"app": "python3 app.py"`, so aws-cdk-lib / constructs
+    must be importable by whichever interpreter runs app.py, or `cdk deploy`
+    dies at synth with `ModuleNotFoundError: No module named 'aws_cdk'`.
+    Nothing in a fresh clone installs them.
+
+    They go in a virtualenv owned by this repo rather than into whatever Python
+    happens to be running. Installing into the host interpreter can replace
+    packages other software on the machine depends on, and on a PEP 668
+    "externally managed" install pip refuses on purpose. Overriding that refusal
+    is exactly what the packaging guidance says not to do, so this creates an
+    isolated environment instead.
+    """
+    python = _cdk_venv_python()
+    if os.path.isfile(python):
+        _ensure_python3_alias(python)
+        return python
+    print(f"  creating CDK virtualenv in {CDK_VENV_DIR}")
+    result = subprocess.run(
+        [sys.executable, "-m", "venv", CDK_VENV_DIR], capture_output=True, text=True
+    )
+    if result.returncode != 0 or not os.path.isfile(python):
+        sys.exit(
+            f"Could not create a virtualenv at {CDK_VENV_DIR}.\n"
+            f"{(result.stderr or result.stdout).strip()}\n"
+            f"On Debian/Ubuntu this usually means the venv module is missing: "
+            f"install python3-venv and re-run."
+        )
+    _ensure_python3_alias(python)
+    return python
+
+
+_INSTALLED_REQS: set[str] = set()
+
+
+def _pip_install(python: str, req: str, force: bool = False) -> None:
+    if not os.path.isfile(req):
+        return
+    if req in _INSTALLED_REQS and not force:
+        return
+    print(f"  installing {os.path.relpath(req, HERE)} into the CDK virtualenv")
+    result = subprocess.run(
+        [python, "-m", "pip", "install", "-q", "-r", req], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        sys.exit(
+            f"Failed to install CDK Python deps from {req}:\n"
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+    _INSTALLED_REQS.add(req)
+
+
+def pip_install_cdk_deps(cdk_dir: str) -> None:
+    """Make the managed virtualenv ready to run this CDK app.
+
+    Always creates the virtualenv and installs the base stack's requirements as
+    the baseline, because a feature may ship no requirements file of its own and
+    would otherwise fall through to the host interpreter. Then layers this
+    stack's own requirements on top when it has them.
+    """
+    python = ensure_cdk_venv()
+    own = os.path.join(cdk_dir, "requirements.txt")
+    base = os.path.join(BASE_STACK_DIR, "requirements.txt")
+    # Reassert the baseline for every stack. The environment is shared, so a
+    # stack that pinned something different would otherwise leave the next one
+    # running against whatever the previous stack installed.
+    _pip_install(python, base, force=own != base)
+    _pip_install(python, own)
+
+
 def cdk_destroy(
     cdk_dir: str,
     stack_name: str,
@@ -264,6 +376,7 @@ def cdk_destroy(
     args = _cdk_cmd() + ["destroy", stack_name, "--force"]
     for k, v in (context or {}).items():
         args += ["-c", f"{k}={v}"]
+    pip_install_cdk_deps(cdk_dir)
     print(f"\n→ cdk destroy {stack_name}  (in {cdk_dir})  region={config['region']}")
     result = subprocess.run(args, cwd=cdk_dir, env=_cdk_env(config))
     return result.returncode == 0
@@ -682,6 +795,10 @@ def cmd_install(args):
     ensure_cdk_bootstrap(config)
 
     # 1. Base stack
+    #    Install the base stack's Python CDK runtime deps first; every cdk.json
+    #    runs `python3 app.py`, so aws-cdk-lib must be importable before synth.
+    print("\nInstalling CDK Python runtime dependencies...")
+    pip_install_cdk_deps(BASE_STACK_DIR)
     cdk_deploy(BASE_STACK_DIR, BASE_STACK_NAME, config, context={"dev_mode": "true"})
     outputs = cfn_outputs(BASE_STACK_NAME, config)
     dashboard_url = outputs.get("DashboardUrl", "")
@@ -697,6 +814,7 @@ def cmd_install(args):
         if not os.path.isdir(cdk_dir):
             print(f"  ! {feature['name']}: no {cdk_dir} directory, skipping")
             continue
+        pip_install_cdk_deps(cdk_dir)
         cdk_deploy(cdk_dir, feature["stack_name"], config)
 
     # 3. Summary
@@ -754,11 +872,15 @@ def cmd_deploy(args):
     config = load_config(interactive=False)
     verify_account(config)
     if args.feature == "base":
+        pip_install_cdk_deps(BASE_STACK_DIR)
         cdk_deploy(BASE_STACK_DIR, BASE_STACK_NAME, config, context={"dev_mode": "true"})
         return
     feature = find_feature(args.feature)
     dest = resolve_feature_dir(feature)
     cdk_dir = os.path.join(dest, feature.get("cdk_dir", "cdk"))
+    # `deploy <feature>` is the documented recovery step after enabling Bedrock
+    # model access, so it has to satisfy the same requirements as install.
+    pip_install_cdk_deps(cdk_dir)
     cdk_deploy(cdk_dir, feature["stack_name"], config)
 
 
