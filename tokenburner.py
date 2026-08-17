@@ -735,40 +735,158 @@ def ensure_cdk_bootstrap(config: dict) -> None:
 DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
-def ensure_bedrock_model(config: dict, model_id: str = DEFAULT_BEDROCK_MODEL_ID) -> None:
-    """Pre-flight: confirm the configured chat model is enabled in the target region.
+def _availability_status(value) -> str:
+    """Normalize a Bedrock availability field that may be a scalar or {status: ...}."""
+    if isinstance(value, dict):
+        return value.get("status", "") or ""
+    return value or ""
 
-    Calls bedrock list-inference-profiles, checks that the requested model id
-    is present, and exits with a clean message if not. This catches the most
-    common new-user failure: chat deploys fine and 500s on the first message
-    because Bedrock model access wasn't approved in the chosen region.
+
+def _foundation_model_for_profile(config: dict, profile_id: str) -> str:
+    """Foundation model id an inference profile routes to, or "" if unknown.
+
+    Inference profile ids carry a routing prefix (us., eu., apac., global.) and
+    some carry none, so the foundation model id cannot be derived reliably by
+    stripping text. Bedrock reports the profile's own model ARNs, so read it
+    from there and fall back to the id itself if it is already a model id.
     """
+    try:
+        prof = run_aws(
+            ["bedrock", "get-inference-profile", "--inference-profile-identifier", profile_id],
+            profile=config["aws_profile"], region=config["region"],
+        )
+    except SystemExit as exc:
+        sys.exit(
+            f"\nCould not look up the inference profile `{profile_id}` in "
+            f"{config['region']}, so the model it routes to is unknown.\n"
+            f"The caller may lack bedrock:GetInferenceProfile, the AWS CLI may "
+            f"be too old for this operation, or Bedrock may have returned an "
+            f"error.\n{exc}\n"
+        )
+    for model in prof.get("models") or []:
+        arn = model.get("modelArn") or ""
+        if "/" in arn:
+            return arn.rsplit("/", 1)[-1]
+    return ""
+
+
+def ensure_bedrock_model(config: dict, model_id: str = DEFAULT_BEDROCK_MODEL_ID) -> None:
+    """Pre-flight: confirm Bedrock reports the configured chat model as usable.
+
+    This is a control-plane check, not a test invocation, so it confirms
+    availability rather than proving an end-to-end call will succeed. It needs
+    bedrock:ListInferenceProfiles, bedrock:GetInferenceProfile, and
+    bedrock:GetFoundationModelAvailability, and stops the install if any of
+    them cannot answer.
+
+    Two checks. First, `bedrock list-inference-profiles` must list the model id.
+    But profile existence is not invocability: an account can list the inference
+    profile while `agreementAvailability` is NOT_AVAILABLE because the Anthropic
+    use-case details form was never submitted, so Converse/ConverseStream 500 on
+    the very first chat message — exactly the "deploys fine, 500s on first
+    message" failure this pre-flight exists to prevent. So second, call
+    `bedrock get-foundation-model-availability` and require the model to be
+    authorized, entitled, and agreed before deploying chat.
+    """
+    console_url = (
+        f"https://{config['region']}.console.aws.amazon.com/bedrock/home?"
+        f"region={config['region']}#/modelaccess"
+    )
+
     try:
         data = run_aws(
             ["bedrock", "list-inference-profiles"],
             profile=config["aws_profile"], region=config["region"],
         )
     except SystemExit:
-        # Bedrock might not be available at all in this region.
-        print(f"\nWARNING: could not query Bedrock in {config['region']}. "
-              f"Chat may fail. Continuing — non-chat features are unaffected.")
-        return
+        # Continuing here would deploy chat unchecked, which is the failure this
+        # pre-flight exists to prevent. Bedrock may genuinely be unavailable in
+        # the region, or the caller may lack bedrock:ListInferenceProfiles;
+        # either way the model cannot be confirmed, so stop and say so.
+        sys.exit(
+            f"\nCould not query Bedrock in {config['region']}, so `{model_id}` "
+            f"cannot be confirmed as usable.\n"
+            f"Bedrock may not be offered in this region, or the caller may lack "
+            f"bedrock:ListInferenceProfiles.\n"
+            f"Check model access here:\n  {console_url}\n"
+            f"To install the other features meanwhile:\n"
+            f"  python3 tokenburner.py install --features drive forums agent\n"
+        )
     profiles = data.get("inferenceProfileSummaries", []) or []
     ids = {p.get("inferenceProfileId", "") for p in profiles}
-    if model_id in ids:
-        print(f"Bedrock model OK: {model_id} available in {config['region']}.")
-        return
+    if model_id not in ids:
+        sys.exit(
+            f"\nThe Bedrock model `{model_id}` is not available in {config['region']}.\n"
+            f"Enable model access in the AWS console:\n"
+            f"  {console_url}\n"
+            f"Then re-run `python3 tokenburner.py install`.\n"
+        )
 
-    console_url = (
-        f"https://{config['region']}.console.aws.amazon.com/bedrock/home?"
-        f"region={config['region']}#/modelaccess"
-    )
-    sys.exit(
-        f"\nThe Bedrock model `{model_id}` is not available in {config['region']}.\n"
-        f"Enable model access in the AWS console:\n"
-        f"  {console_url}\n"
-        f"Then re-run `python3 tokenburner.py install`.\n"
-    )
+    # get-foundation-model-availability wants the underlying foundation model id,
+    # while model_id is an inference profile id. Ask Bedrock for the profile's
+    # own model ARNs rather than stripping a routing prefix by hand: the prefix
+    # set is not fixed (us., eu., apac., global.) and some ids carry none.
+    foundation_model_id = _foundation_model_for_profile(config, model_id)
+    if not foundation_model_id:
+        sys.exit(
+            f"\nCould not determine which foundation model `{model_id}` routes to "
+            f"in {config['region']}, so its usability cannot be confirmed.\n"
+            f"Check the model id in features.yaml, or verify access directly:\n"
+            f"  {console_url}\n"
+        )
+    try:
+        avail = run_aws(
+            ["bedrock", "get-foundation-model-availability",
+             "--model-id", foundation_model_id],
+            profile=config["aws_profile"], region=config["region"],
+        )
+    except SystemExit:
+        # Failing open here reintroduces exactly what this check exists to stop:
+        # chat deploys and 500s on the first message. Access denied, throttling,
+        # an old CLI, or a service error all land here, so stop instead.
+        sys.exit(
+            f"\nCould not confirm that `{model_id}` is usable in {config['region']}.\n"
+            f"get-foundation-model-availability failed. Common causes: the caller "
+            f"lacks bedrock:GetFoundationModelAvailability, or the AWS CLI is too "
+            f"old for this operation.\n"
+            f"Verify access here, then re-run:\n  {console_url}\n"
+            f"To install the other features meanwhile:\n"
+            f"  python3 tokenburner.py install --features drive forums agent\n"
+        )
+
+    authorization = _availability_status(avail.get("authorizationStatus"))
+    entitlement = _availability_status(avail.get("entitlementAvailability"))
+    region_avail = _availability_status(avail.get("regionAvailability"))
+    agreement = _availability_status(avail.get("agreementAvailability"))
+
+    # Require each status explicitly. Treating a missing field as acceptable
+    # would report an incomplete response as usable.
+    blockers = []
+    for label, value, expected in (
+        ("authorizationStatus", authorization, "AUTHORIZED"),
+        ("entitlementAvailability", entitlement, "AVAILABLE"),
+        ("regionAvailability", region_avail, "AVAILABLE"),
+        ("agreementAvailability", agreement, "AVAILABLE"),
+    ):
+        if value != expected:
+            blockers.append(f"{label}={value or 'missing'}")
+
+    if blockers:
+        if any(b.startswith("agreementAvailability") for b in blockers):
+            remedy = ("This is the Anthropic use-case details form. Submit it for "
+                      "this account, then request the model in model access:\n")
+        else:
+            remedy = ("Check model access and that the model is offered in this "
+                      "region:\n")
+        sys.exit(
+            f"\nThe Bedrock model `{model_id}` is listed in {config['region']} but is "
+            f"not yet invocable ({', '.join(blockers)}).\n"
+            f"{remedy}"
+            f"  {console_url}\n"
+            f"Then re-run `python3 tokenburner.py install`.\n"
+        )
+
+    print(f"Bedrock model OK: {model_id} reported available in {config['region']}.")
 
 
 def cmd_install(args):
