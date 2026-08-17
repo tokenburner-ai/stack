@@ -605,10 +605,81 @@ def purge_retained_tables(config: dict) -> None:
         )
 
 
-def purge_retained_resources(config: dict) -> None:
-    """Delete RETAIN DynamoDB tables and S3 buckets after stack destroy."""
+def _product_log_groups(config: dict) -> list[str]:
+    """Product stack log groups, or none when that stack is not deployed here.
+
+    destroy_product_stack() reports success when the product template is absent,
+    without destroying anything, so its logs must not be queued in that case.
+    """
+    if not os.path.isdir(PRODUCT_CDK_DIR):
+        return []
+    return stack_log_groups(config, f"tokenburner-{config.get('product_name', 'demo')}")
+
+
+def stack_log_groups(config: dict, stack_name: str) -> list[str]:
+    """Log groups belonging to a stack's Lambda functions.
+
+    Call this while the stack still exists. Lambda auto-creates
+    /aws/lambda/<function-name> on first invocation, outside the stack, so the
+    names have to be read from the stack's own resources before it is destroyed.
+    Deleting by name prefix instead would also remove log groups belonging to
+    features that are still deployed, and any the user created themselves.
+    """
+    out = subprocess.run(
+        [*_aws_base(config), "cloudformation", "list-stack-resources",
+         "--stack-name", stack_name,
+         "--query", "StackResourceSummaries[?ResourceType=='AWS::Lambda::Function']"
+                    ".PhysicalResourceId",
+         "--output", "json"],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        err = (out.stderr or "").strip()
+        # A stack that is already gone is fine; anything else means the mapping
+        # is about to be lost, so say so rather than silently deleting nothing.
+        if "does not exist" not in err:
+            print(f"  ! could not read resources of {stack_name}, its log groups "
+                  f"will be left behind: {err.splitlines()[-1] if err else 'unknown error'}")
+        return []
+    try:
+        names = json.loads(out.stdout or "[]")
+    except json.JSONDecodeError:
+        print(f"  ! unreadable resource list for {stack_name}, its log groups "
+              f"will be left behind")
+        return []
+    return [f"/aws/lambda/{n}" for n in names if n]
+
+
+def purge_log_groups(config: dict, names: list[str]) -> list[str]:
+    """Delete the named log groups. Returns the ones that could not be deleted."""
+    failed = []
+    for name in sorted(set(names)):
+        result = subprocess.run(
+            [*_aws_base(config), "logs", "delete-log-group", "--log-group-name", name],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"  deleted log group {name}")
+        elif "ResourceNotFoundException" in (result.stderr or ""):
+            pass  # already gone
+        else:
+            print(f"  ! could not delete log group {name}: "
+                  f"{(result.stderr or '').strip().splitlines()[-1] if result.stderr else 'unknown error'}")
+            failed.append(name)
+    return failed
+
+
+def purge_retained_resources(config: dict, log_groups: list[str] | None = None) -> list[str]:
+    """Delete RETAIN DynamoDB tables and S3 buckets, plus the given log groups.
+
+    Log groups are passed in rather than discovered, because they must be read
+    from each stack's resources before that stack is destroyed.
+    """
     purge_retained_s3_buckets(config)
     purge_retained_tables(config)
+    if log_groups:
+        return purge_log_groups(config, log_groups)
+    return []
 
 
 def destroy_stack(
@@ -1015,59 +1086,85 @@ def cmd_destroy(args):
     verify_account(config)
     purge = getattr(args, "purge_retained", False)
 
+    collected_log_groups: list[str] = []
+
     def destroy_one_feature(feature: dict) -> bool:
         dest = resolve_feature_dir(feature) if feature.get("path") else os.path.join(FEATURES_DIR, feature["name"])
         cdk_dir = os.path.join(dest, feature.get("cdk_dir", "cdk"))
+        # Read the stack's Lambda functions while the stack still exists, but
+        # only queue them for deletion once the stack is actually gone. A stack
+        # that failed to destroy is still running and still needs its logs.
+        pending = stack_log_groups(config, feature["stack_name"]) if purge else []
         pre = _agent_pre_destroy if feature["name"] == "agent" else None
         if feature["name"] == "agent":
             print("\n→ agent pre-destroy: detach tier policies and remove IAM users")
         ok = destroy_stack(cdk_dir, feature["stack_name"], config, pre_destroy=pre)
         if not ok:
-            print(f"  ! {feature['name']} destroy failed")
-        return ok
+            print(f"  ! {feature['name']} destroy failed, keeping its log groups")
+            return False
+        collected_log_groups.extend(pending)
+        return True
 
     if args.feature:
         if args.feature == "product":
+            pending = _product_log_groups(config) if purge else []
             if not destroy_product_stack(config):
                 sys.exit("product stack destroy failed")
+            collected_log_groups.extend(pending)
         else:
             feature = find_feature(args.feature)
             if not destroy_one_feature(feature):
                 sys.exit(f"destroy failed for feature {args.feature}")
         if purge:
-            print("\n→ deleting retained S3 buckets and DynamoDB tables")
-            purge_retained_resources(config)
+            print("\n→ deleting retained S3 buckets, DynamoDB tables, "
+                  f"and {len(collected_log_groups)} log group(s) from this stack")
+            undeleted = purge_retained_resources(config, collected_log_groups)
+            if undeleted:
+                sys.exit(f"{len(undeleted)} log group(s) could not be deleted; "
+                         f"the stack itself was destroyed.")
         return
 
     # Destroy everything — product, features, base.
     confirm = input(
         "This will destroy all tokenburner stacks"
-        + (" and retained S3 buckets + DynamoDB tables" if purge else "")
+        + (" and retained S3 buckets, DynamoDB tables, and the CloudWatch log "
+           "history of every tokenburner Lambda" if purge else "")
         + ". Type 'destroy' to confirm: "
     ).strip()
     if confirm != "destroy":
         sys.exit("Aborted.")
 
-    print("\n→ destroying product stack (if deployed)")
-    destroy_product_stack(config)
-
     failed: list[str] = []
+
+    print("\n→ destroying product stack (if deployed)")
+    product_pending = _product_log_groups(config) if purge else []
+    if destroy_product_stack(config):
+        collected_log_groups.extend(product_pending)
+    else:
+        failed.append("product")
+
     for feature in load_features():
         if not destroy_one_feature(feature):
             failed.append(feature["name"])
 
     print("\n→ destroying base stack")
-    if not destroy_stack(
+    base_pending = stack_log_groups(config, BASE_STACK_NAME) if purge else []
+    if destroy_stack(
         BASE_STACK_DIR,
         BASE_STACK_NAME,
         config,
         context={"dev_mode": "true"},
     ):
+        collected_log_groups.extend(base_pending)
+    else:
         failed.append("base")
 
     if purge:
-        print("\n→ deleting retained S3 buckets and DynamoDB tables")
-        purge_retained_resources(config)
+        print("\n→ deleting retained S3 buckets, DynamoDB tables, "
+              f"and {len(collected_log_groups)} log group(s) from the destroyed stacks")
+        undeleted = purge_retained_resources(config, collected_log_groups)
+        if undeleted:
+            failed.append(f"{len(undeleted)} log group(s)")
 
     if os.path.exists(CREDS_FILE):
         os.remove(CREDS_FILE)

@@ -26,6 +26,10 @@ Feature stacks such as **forums** and **drive** set `RemovalPolicy.RETAIN` on th
 
 Stacks are gone in CloudFormation, but tables such as `tokenburner-api-keys` still exist and block a clean redeploy.
 
+### 5. Retained CloudWatch log groups after “successful” destroy
+
+Lambda auto-creates a log group (`/aws/lambda/<function-name>`) the first time each function runs. These live **outside** the CDK stacks, so `cdk destroy` never removes them. After a teardown, log groups like `/aws/lambda/tokenburner-agent-admin` or `/aws/lambda/tokenburner-drive` remain and accumulate across install/destroy cycles. Low cost, but they clutter the account and are `tokenburner-*` leftovers.
+
 ---
 
 ## Root cause: agent IAM users outlive the stack
@@ -59,7 +63,7 @@ As of the teardown fix PR, `tokenburner destroy` handles the common case automat
 | Agent pre-destroy | Detach tier policies, delete access keys, delete `/tokenburner-agent/` users |
 | Feature stacks | `cdk destroy` with retry + CloudFormation fallback on `DELETE_FAILED` |
 | Base stack | `cdk destroy -c dev_mode=true` after all features are gone |
-| `--purge-retained` | Empties and deletes retained S3 buckets (`tokenburner-*`, `tokendrive-*`, or `ManagedBy=tokenburner` tag), deletes retained DynamoDB tables, removes `~/.tokenburner/credentials` |
+| `--purge-retained` | Empties and deletes retained S3 buckets (`tokenburner-*`, `tokendrive-*`, or `ManagedBy=tokenburner` tag), deletes retained DynamoDB tables, deletes the CloudWatch log groups belonging to each destroyed stack's Lambda functions, read from that stack's own resources, removes `~/.tokenburner/credentials` |
 
 ### Full clean teardown
 
@@ -128,7 +132,7 @@ This is common when using account root or a user that does not assume the CDK de
 
 ## Related files
 
-- `tokenburner.py` — `cleanup_agent_iam_users`, `destroy_stack`, `purge_retained_resources`, `delete_s3_bucket`
+- `tokenburner.py` — `cleanup_agent_iam_users`, `destroy_stack`, `purge_retained_resources`, `delete_s3_bucket`, `purge_log_groups`
 - `features/agent/cdk/stack.py` — `TierBasic` / `TierPro` policies
 - `features/agent/app/admin_api.py` — creates users and attaches policies
 - `context/destroy.md` — AI assistant playbook for destroy
